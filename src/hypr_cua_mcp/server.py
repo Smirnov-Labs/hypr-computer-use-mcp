@@ -132,13 +132,29 @@ def double_click(x: float, y: float, button: str = "left", frame_id: str | None 
 
 
 @mcp.tool()
-def move_mouse(x: float, y: float, frame_id: str | None = None) -> str:
-    """Move the pointer to (x,y) in screenshot `frame_id`'s pixel space."""
+def move_mouse(x: float, y: float, frame_id: str | None = None, follow: bool = False) -> str:
+    """Move the pointer to (x,y) in screenshot `frame_id`'s pixel space.
+
+    follow=True mimics a physical mouse's hover-focus: after moving, give keyboard
+    focus to the window under the cursor. The synthetic pointer alone does NOT
+    trigger Hyprland's own follow_mouse on a warp, so focus is set explicitly.
+    No-op focus if the cursor lands on empty space or a bar. (A plain click already
+    focuses what it hits — use follow to focus by hovering, without clicking.)
+    """
     frame = coords.frames.resolve(frame_id)
     gx, gy = frame.to_global(x, y)
     inputs.reset_idle()
     inputs.move(gx, gy)
-    return f"moved to screen({gx},{gy})"
+    msg = f"moved to screen({gx},{gy})"
+    if follow:
+        w = hyprtree.window_at(gx, gy)
+        if w is None:
+            msg += " · follow: no window there"
+        elif hyprcontrol.focus_window(w["id"]):
+            msg += f" · follow: focused {w['id']} ({w['wm_class']})"
+        else:
+            msg += f" · follow: {w['id']} focus did not land"
+    return msg
 
 
 @mcp.tool()

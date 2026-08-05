@@ -102,3 +102,23 @@ def get_focused_address() -> str | None:
     """Address of the currently focused window, or None."""
     aw = _json(["activewindow"])
     return aw.get("address") if aw else None
+
+
+def window_at(gx: int, gy: int) -> dict | None:
+    """The visible window whose global rect contains (gx, gy), or None.
+
+    Only considers windows on their monitor's active workspace (`visible`). When
+    windows overlap, prefers a floating one (it stacks above tiled); among equals,
+    the last listed. Used for hover-follow (`move_mouse(follow=True)`); the tree has
+    no true z-order, so the floating heuristic is best-effort for stacked floats.
+    """
+    hits = [
+        w for w in list_windows()
+        if w["visible"]
+        and w["rect"]["x"] <= gx < w["rect"]["x"] + w["rect"]["w"]
+        and w["rect"]["y"] <= gy < w["rect"]["y"] + w["rect"]["h"]
+    ]
+    if not hits:
+        return None
+    floating = [w for w in hits if w["floating"]]
+    return (floating or hits)[-1]

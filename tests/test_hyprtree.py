@@ -70,3 +70,37 @@ def test_find_window(monkeypatch):
 def test_get_focused_address(monkeypatch):
     monkeypatch.setattr(hyprtree, "_json", lambda args: {"address": "0xaaa"})
     assert hyprtree.get_focused_address() == "0xaaa"
+
+
+# --- window_at: which window is under a global point (for hover-follow) ---
+
+def test_window_at_returns_visible_window_containing_point(monkeypatch):
+    _mock(monkeypatch, {"monitors": _MONITORS, "clients": _CLIENTS})
+    assert hyprtree.window_at(400, 300)["id"] == "0xaaa"  # inside 0xaaa (10,20,800,600)
+
+
+def test_window_at_none_for_empty_space(monkeypatch):
+    _mock(monkeypatch, {"monitors": _MONITORS, "clients": _CLIENTS})
+    assert hyprtree.window_at(9000, 9000) is None
+
+
+def test_window_at_ignores_non_visible_window(monkeypatch):
+    _mock(monkeypatch, {"monitors": _MONITORS, "clients": _CLIENTS})
+    # (3860,10) is inside 0xbbb's rect, but 0xbbb is hidden -> not a hit
+    assert hyprtree.window_at(3860, 10) is None
+
+
+def test_window_at_prefers_floating_when_overlapping(monkeypatch):
+    mons = [{"id": 0, "name": "DP-1", "x": 0, "y": 0, "width": 3840, "height": 2160,
+             "scale": 1.0, "focused": True, "activeWorkspace": {"name": "1"}}]
+    clients = [
+        {"address": "0xtile", "class": "Alacritty", "title": "t", "workspace": {"name": "1"},
+         "monitor": 0, "at": [0, 0], "size": [1000, 1000], "floating": False,
+         "focusHistoryID": 1, "hidden": False},
+        {"address": "0xfloat", "class": "mpv", "title": "f", "workspace": {"name": "1"},
+         "monitor": 0, "at": [100, 100], "size": [400, 400], "floating": True,
+         "focusHistoryID": 2, "hidden": False},
+    ]
+    _mock(monkeypatch, {"monitors": mons, "clients": clients})
+    assert hyprtree.window_at(200, 200)["id"] == "0xfloat"  # both contain it; floating on top
+    assert hyprtree.window_at(900, 900)["id"] == "0xtile"   # only the tiled one here

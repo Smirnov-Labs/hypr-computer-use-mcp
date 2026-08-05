@@ -57,6 +57,46 @@ def test_click_maps_through_resolved_frame(monkeypatch):
     assert (got["gx"], got["gy"]) == (110, 110)
 
 
+# --- move_mouse(follow=...) : opt-in hover-focus ---
+
+def test_move_mouse_follow_focuses_window_under_cursor(monkeypatch):
+    store = coords.FrameStore()
+    fid = store.set_last(_frame())  # origin (100,100), scale 1.0
+    monkeypatch.setattr(coords, "frames", store)
+    moved = {}
+    monkeypatch.setattr(inputs, "move", lambda gx, gy: moved.update(gx=gx, gy=gy))
+    monkeypatch.setattr(hyprtree, "window_at", lambda gx, gy: {"id": "0xwin", "wm_class": "X"})
+    focused = {}
+    monkeypatch.setattr(hyprcontrol, "focus_window",
+                        lambda cid: focused.update(cid=cid) or True)
+    out = server.move_mouse(10, 10, frame_id=fid, follow=True)
+    assert (moved["gx"], moved["gy"]) == (110, 110)  # still warps
+    assert focused == {"cid": "0xwin"}               # and focuses what's there
+    assert "0xwin" in out
+
+
+def test_move_mouse_default_does_not_focus(monkeypatch):
+    store = coords.FrameStore()
+    fid = store.set_last(_frame())
+    monkeypatch.setattr(coords, "frames", store)
+    monkeypatch.setattr(inputs, "move", lambda gx, gy: None)
+    monkeypatch.setattr(hyprcontrol, "focus_window",
+                        lambda cid: pytest.fail("must not focus when follow is off"))
+    server.move_mouse(10, 10, frame_id=fid)  # follow defaults False
+
+
+def test_move_mouse_follow_noop_on_empty_space(monkeypatch):
+    store = coords.FrameStore()
+    fid = store.set_last(_frame())
+    monkeypatch.setattr(coords, "frames", store)
+    monkeypatch.setattr(inputs, "move", lambda gx, gy: None)
+    monkeypatch.setattr(hyprtree, "window_at", lambda gx, gy: None)
+    monkeypatch.setattr(hyprcontrol, "focus_window",
+                        lambda cid: pytest.fail("no window under cursor -> no focus"))
+    out = server.move_mouse(10, 10, frame_id=fid, follow=True)
+    assert "no window" in out
+
+
 # --- validation failures raise (SDK turns them into is_error) ---
 
 def test_screenshot_unknown_output_raises(monkeypatch):
