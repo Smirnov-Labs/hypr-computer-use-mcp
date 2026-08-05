@@ -10,6 +10,7 @@ dependencies = [
     "i3ipc>=2.2",
     "pillow>=10",
     "python-xlib>=0.33",
+    "evdev>=1.9.3",
 ]
 
 [project.scripts]
