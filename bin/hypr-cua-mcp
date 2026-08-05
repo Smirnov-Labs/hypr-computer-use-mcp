@@ -1,11 +1,10 @@
 #!/usr/bin/env bash
 # Entry point for Claude Code MCP registration.
 #
-# SAFE DEFAULT: drives the Xephyr sandbox on :1, NOT your real desktop.
-# Go live by setting I3CUA_DISPLAY=:0 (e.g. register a second MCP entry with
-#   -e I3CUA_DISPLAY=:0 -- ), once you trust it.
+# Runs in the current Wayland/Hyprland session (WAYLAND_DISPLAY and
+# HYPRLAND_INSTANCE_SIGNATURE are inherited from the environment). There is no
+# sandbox on Wayland: this DRIVES YOUR REAL DESKTOP. Supervise live runs.
 set -euo pipefail
 
 HERE="$(cd "$(dirname "$0")/.." && pwd)"
-export DISPLAY="${I3CUA_DISPLAY:-:1}"
 exec uv run --directory "$HERE" hypr-cua-mcp

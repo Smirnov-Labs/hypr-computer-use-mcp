@@ -1,106 +1,89 @@
 # Gotchas & environment notes
 
-Hard-won lessons from building and verifying this on hexane (Arch, i3 4.25, X11,
-three outputs). Most of these are environment-specific landmines that cost real
-debugging time.
+Hard-won lessons from building and verifying this on hexane (Arch, Hyprland
+0.56.1, Wayland, multi-output). Most cost real debugging time.
 
-## i3ipc ignores `$DISPLAY` (the fail-open one)
+## `hyprctl dispatch` is Lua-wrapped (the big one)
 
-i3ipc's socket discovery order is `$I3SOCK` → `$SWAYSOCK` → X root-window atom.
-hexane **exports** `I3SOCK=/run/user/1000/i3/ipc-socket.<pid>` (the login `:0`
-i3), so any i3ipc client binds to `:0` regardless of `DISPLAY`. A "sandbox" on
-`:1` would have silently driven the real desktop.
-
-**Fix:** resolve the socket from the `I3_SOCKET_PATH` atom on the target
-`$DISPLAY`'s root window; never fall back to `$I3SOCK`; fail loudly if absent.
-See `src/hypr_cua_mcp/i3tree.py::_i3_socket_path`.
-
-## Nested i3 won't start under an inherited `$I3SOCK`
-
-Launching the sandbox's nested i3 with `I3SOCK` still set makes it try to
-*create* its socket at `:0`'s path:
+This machine configures Hyprland in **Lua** (`~/.dotfiles/hypr/hyprland.lua`), so
+a plain `hyprctl dispatch movecursor 300 300` is parsed as Lua and fails:
 
 ```
-[libi3] ERROR: Refusing to create UNIX socket at …ipc-socket.29373: Socket is already in use
+error: return hl.dispatch(movecursor 300 300)  -- ')' expected near '300'
 ```
 
-**Fix:** start it with `env -u I3SOCK DISPLAY=:1 i3 -c sandbox/i3.config`.
-
-## `fc-match monospace` → Noto Color Emoji → xterm dies
-
-On hexane, generic `monospace` resolves to `NotoColorEmoji.ttf` (fallout from the
-Noto emoji strong-append in the user's `fonts.conf`). xterm then fails with:
+Dispatchers are Lua objects under `hl.dsp.*`; `hl.dsp.X(...)` builds a closure and
+`hl.dispatch(closure)` runs it. So the working form is:
 
 ```
-xterm: Selected font has no non-zero height for ISO-8859-1 encoding
+hyprctl eval 'hl.dispatch(hl.dsp.focus({ workspace = 5 }))'
+hyprctl eval 'hl.dispatch(hl.dsp.window.move({ workspace = 5, follow = false, window = "address:0x…" }))'
+hyprctl eval 'hl.dispatch(hl.dsp.window.float({ action = "toggle", window = "address:0x…" }))'
+hyprctl eval 'hl.dispatch(hl.dsp.focus({ window = "address:0x…" }))'
+hyprctl eval 'hl.dispatch(hl.dsp.exec_cmd("alacritty"))'
 ```
 
-**Fix:** use an explicit face, `xterm -fa "DejaVu Sans Mono"`, never the
-`monospace` alias. Likely affects other legacy/core-font X clients too.
+Window targets use the `"address:0x…"` selector (the exact form `hyprctl clients`
+reports). `hyprctl eval` prints only `ok`/`error:` — never a value — so to
+introspect the API force values through `error("…")`. See `hyprcontrol.py`.
 
-## zsh `noclobber`
+## ydotool absolute coords are ~2× and clamp (why we don't use it)
 
-The user's zsh sets `noclobber`, so `> existing_file` fails with "file exists"
-and the command doesn't run (silently breaking `cmd > log &` setups). Use `>|`
-to force, or `rm -f` the target first.
+`ydotool mousemove -a -x 300 -y 300` lands at ~`(600,600)`; `-x 5200` clamps to
+the framebuffer edge. Its uinput abs-axis range doesn't match the multi-monitor
+layout. Also, **ydotool has no scroll/wheel command** (`click/mousemove/type/key`
+only). So instead of ydotool we own a uinput device directly (below).
 
-## Multi-output framebuffer
+## Self-owned uinput device (the input backend)
 
-`import -window root` grabs **all** outputs — 7680×2880 across three monitors on
-hexane. Downscaling that to the API budget destroys click accuracy, and
-coordinates span monitors. Always capture **per output** (the default is the
-primary). `grim` is installed but is Wayland-only; ignore it on X11.
+An `evdev.UInput` with `EV_ABS` X/Y (range `0..65535`), `EV_KEY` (buttons + a
+US-ASCII keymap), and `EV_REL` wheel, created with `input_props=[INPUT_PROP_POINTER]`
+(**required** — without it the compositor treats an abs device as a *touchscreen*
+and won't move the cursor). Findings:
 
-## mcp 2.0 SDK changes
+- **Abs mapping is linear:** the compositor maps `[0, 65535] → full layout extent`
+  per axis, so `abs = pixel * 65535 / extent` (extent from `hyprctl monitors`).
+  Round-trip accuracy is ~1px.
+- **~1s settle:** after creating the device, wait ~1s for the compositor to bind
+  it before the first event, or the first move is dropped. The MCP server creates
+  it once at first use and keeps it.
+- **Rootless:** `/dev/uinput` is usually `crw-rw----+` with a `uaccess` ACL
+  granting the logged-in user rw — so no root and no `ydotoold` daemon.
+- **Real input resets idle:** uinput events are genuine input, so they reset the
+  compositor idle timer — none of the X11 synthetic-input self-lock problem, hence
+  `inputs.reset_idle()` is a no-op.
 
-- `FastMCP` → `MCPServer`, moved to `mcp.server.mcpserver`.
-- Result objects are snake_case: `server_info`, `is_error`, `mime_type`.
-- To return `[Image, caption]` from a tool, decorate it
-  `@mcp.tool(structured_output=False)` so the SDK doesn't try to synthesize
-  structured output from the list.
+## `follow_mouse = 1` steals focus
+
+Hyprland's default `follow_mouse = 1` makes keyboard focus track the pointer, so a
+`hl.dsp.focus({window=…})` dispatch is immediately reverted to whatever is under
+the cursor. `focus_window(address)` is therefore best-effort. The reliable way to
+focus a window for typing is to **click it** via screenshot coordinates.
+`type_text(con_id=…)` verifies focus and raises rather than typing into the wrong
+window.
+
+## Workspace → monitor affinity
+
+On multi-monitor, `goto_workspace(N)` (`hl.dsp.focus({workspace=N})`) sends you to
+wherever workspace N lives — not necessarily the currently focused monitor. Don't
+assume a launched window landed on the monitor you were looking at; re-query
+`list_windows`/`get_outputs` for ground truth.
+
+## grim captures the whole layout at global origin
+
+`grim -t png -` (no `-o`/`-g`) composites **every** output into one image sized to
+the layout bounding box, with image `(0,0)` = global `(0,0)`. That lets us crop by
+global coordinates exactly. Downscaling the whole multi-monitor grab would destroy
+click accuracy, so we always crop to one output/window first.
+
+## wl-copy backgrounds a holder (pipe-hang)
+
+`wl-copy` forks a resident process to serve the selection. Under `subprocess.run`
+with captured pipes, that holder can keep the pipe open and hang the call until
+timeout — so writes route stdout/stderr to `DEVNULL` (`_run(capture=False)`), same
+trick the X11 xclip port used.
 
 ## MCP servers load at client startup
 
-A newly `claude mcp add`-ed server is **not** available in the running session —
-restart / reconnect Claude Code to pick it up. That's why the sandbox and live
-entries are separate registrations, each realized on the next restart.
-
-## Automation self-locks the screen (DPMS / screensaver)
-
-Synthetic `xdotool` (XTEST) input does **not** reliably reset the X DPMS /
-screensaver idle timer. During a live `:0` session on 2026-07-31 the screen
-idle-locked mid-demo: `xss-lock` → `xsecurelock` fired ~5 min after the last
-*physical* input (DPMS `Standby=300`), and DPMS powered the panels off — landing
-in a black lock screen with no visible prompt.
-
-Two consequences:
-
-- **A long automated run can lock you out.** Once locked, **do not send
-  keystrokes** — they go straight into the (invisible) `xsecurelock` password
-  field.
-- **Fix (implemented):** every tool call runs `inputs.reset_idle()` —
-  `xset s reset` + `xset dpms force on` — which resets the idle timer *while
-  actively driving*. It deliberately does **not** globally disable the
-  screensaver (`xset s off`), so the desktop still idle-locks normally once the
-  tool goes quiet, and there is no disabled state left dangling if the server
-  crashes (no fail-open, which the naive "disable + restore on exit" version
-  has). See `src/hypr_cua_mcp/inputs.py::reset_idle`.
-
-Recovery is manual: real mouse/keyboard input wakes DPMS and brings up the auth
-prompt (a panel that was DPMS-off may not re-train and stay black — use a VT
-switch as the escape hatch).
-
-## focus_follows_mouse steals focus mid-sequence
-
-i3 defaults to `focus_follows_mouse yes`. A pointer tool (`click`/`scroll`/
-`move_mouse`/`drag`) moving over a different window changes keyboard focus — so a
-later `type_text` with no `con_id` lands there, not where an earlier
-`focus_window` put it. The sandbox config sets `focus_follows_mouse no`; on a
-live desktop, prefer passing `con_id` to `type_text`/`key` (which re-focuses and
-verifies immediately before typing) rather than relying on a stale focus.
-
-## `pkill -f` self-matches the calling shell
-
-`pkill -f 'Xephyr :1'` also matches the shell running the command, because that
-pattern appears in the shell's own command line — so it SIGTERMs itself (exit
-144) before finishing. Match the process **name** instead: `pkill -x Xephyr`.
+A newly `claude mcp add`-ed server (or new code in an existing one) isn't in the
+running session — `/mcp` → reconnect, or restart Claude Code, to pick it up.
