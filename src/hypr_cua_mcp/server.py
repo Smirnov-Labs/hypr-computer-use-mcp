@@ -24,7 +24,7 @@ import sys
 
 from mcp.server.mcpserver import MCPServer, Image
 
-from . import capture, clipboard, coords, hyprcontrol, hyprtree, inputs
+from . import capture, cdp, clipboard, coords, hyprcontrol, hyprtree, inputs
 
 mcp = MCPServer("hypr-cua", version="0.1.0")
 
@@ -249,6 +249,62 @@ def write_clipboard(text: str, selection: str = "clipboard", secret: bool = Fals
     server's action log (not built yet) and keeps it out of the return; the text
     still transits this tool call, so it appears in the MCP client's transcript."""
     return clipboard.write_clipboard(text, selection, secret)
+
+
+# --- CDP browser (drive Chrome tabs over the DevTools protocol; no focus) ---
+
+@mcp.tool()
+def cdp_targets() -> str:
+    """List drivable Chrome tabs (id, title, url) in the copilot browser. Starts a
+    DEDICATED Chrome (isolated profile, debugging port) on first use if none is up —
+    it never touches your main Chrome. Use a tab's `id` with the other cdp_* tools."""
+    return json.dumps(cdp.list_targets(), indent=2)
+
+
+@mcp.tool()
+def cdp_open(url: str = "about:blank") -> str:
+    """Open a new tab in the copilot browser. Returns the new tab's {id, url} as JSON."""
+    return json.dumps(cdp.open_tab(url))
+
+
+@mcp.tool()
+def cdp_navigate(target: str, url: str) -> str:
+    """Navigate a tab (by id from cdp_targets) to a URL. Returns {id, url, frameId}."""
+    return json.dumps(cdp.navigate(target, url))
+
+
+@mcp.tool()
+def cdp_eval(target: str, expression: str) -> str:
+    """Evaluate a JavaScript expression in a tab (by id) and return its value as
+    JSON. A thrown JS exception is surfaced as an error, not swallowed."""
+    return json.dumps(cdp.eval_js(target, expression))
+
+
+@mcp.tool()
+def cdp_read(target: str) -> str:
+    """Read a tab's visible text (document.body.innerText) plus its title and url,
+    as JSON {title, url, text} — a focus-free way to see page content."""
+    return json.dumps(cdp.read_text(target), indent=2)
+
+
+@mcp.tool()
+def cdp_click(target: str, selector: str) -> str:
+    """Click the first element matching a CSS selector in a tab (by id). Errors if
+    nothing matches the selector."""
+    return cdp.click(target, selector)
+
+
+@mcp.tool()
+def cdp_type(target: str, selector: str, text: str) -> str:
+    """Type text into the element matching a CSS selector in a tab (by id): sets its
+    value and dispatches input/change events. Returns a length summary — not the text."""
+    return cdp.type_text(target, selector, text)
+
+
+@mcp.tool()
+def cdp_close(target: str) -> str:
+    """Close a tab (by id) in the copilot browser."""
+    return cdp.close_tab(target)
 
 
 # --- Hyprland control (workspace / float / launch / layout) -----------------

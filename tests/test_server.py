@@ -1,7 +1,7 @@
 """Tests for server tool wiring: focus-verify safety, frame-id contract, errors."""
 import pytest
 
-from hypr_cua_mcp import clipboard, coords, hyprcontrol, hyprtree, inputs, server
+from hypr_cua_mcp import cdp, clipboard, coords, hyprcontrol, hyprtree, inputs, server
 
 
 def _frame(**kw):
@@ -145,3 +145,40 @@ def test_write_clipboard_delegates_and_hides_value(monkeypatch):
     out = server.write_clipboard("abc", selection="clipboard", secret=True)
     assert seen == {"text": "abc", "sel": "clipboard", "secret": True}
     assert "abc" not in out
+
+
+# --- CDP browser wiring (delegate; type muzzles the value) ---
+
+def test_cdp_targets_delegates_and_serializes(monkeypatch):
+    monkeypatch.setattr(cdp, "list_targets", lambda: [{"id": "T1", "url": "http://a"}])
+    out = server.cdp_targets()
+    assert "T1" in out and "http://a" in out
+
+
+def test_cdp_eval_delegates_and_json_encodes(monkeypatch):
+    seen = {}
+    monkeypatch.setattr(cdp, "eval_js",
+                        lambda t, e: seen.update(t=t, e=e) or {"n": 7})
+    out = server.cdp_eval("T1", "({n:7})")
+    assert seen == {"t": "T1", "e": "({n:7})"}
+    assert out == '{"n": 7}'
+
+
+def test_cdp_open_delegates(monkeypatch):
+    seen = {}
+    monkeypatch.setattr(cdp, "open_tab",
+                        lambda url: seen.update(url=url) or {"id": "N1", "url": url})
+    out = server.cdp_open("https://x")
+    assert seen == {"url": "https://x"}
+    assert "N1" in out
+
+
+def test_cdp_type_delegates_and_hides_text(monkeypatch):
+    seen = {}
+    monkeypatch.setattr(
+        cdp, "type_text",
+        lambda t, s, x: seen.update(t=t, s=s, x=x) or "typed 6 chars into #f in T1",
+    )
+    out = server.cdp_type("T1", "#f", "s3kr3t")
+    assert seen == {"t": "T1", "s": "#f", "x": "s3kr3t"}
+    assert "s3kr3t" not in out  # value stays out of the tool's return
