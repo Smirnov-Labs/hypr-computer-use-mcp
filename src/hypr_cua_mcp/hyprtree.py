@@ -66,15 +66,19 @@ def list_windows() -> list[dict]:
 
 
 def get_outputs() -> list[dict]:
-    """Active outputs (monitors) with their global geometry and scale."""
+    """Active outputs (monitors) with their global geometry (LOGICAL px) and scale."""
     outs: list[dict] = []
     for m in _json(["monitors"]):
+        sc = m.get("scale") or 1.0
         outs.append({
             "name": m["name"],
             # Wayland has no "primary"; the focused monitor is the sensible default target.
             "primary": bool(m.get("focused")),
-            "rect": {"x": m["x"], "y": m["y"], "w": m["width"], "h": m["height"]},
-            "scale": m.get("scale", 1.0),
+            # width/height are PHYSICAL px but x/y are LOGICAL; report the logical
+            # rect so it matches window at/size and the pointer's coordinate space.
+            "rect": {"x": m["x"], "y": m["y"],
+                     "w": round(m["width"] / sc), "h": round(m["height"] / sc)},
+            "scale": sc,
             "current_workspace": (m.get("activeWorkspace") or {}).get("name"),
         })
     return outs

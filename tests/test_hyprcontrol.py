@@ -87,10 +87,18 @@ def test_layout_message(monkeypatch):
     assert calls == ['hl.dsp.layout("togglesplit")']
 
 
-def test_run_dispatch_blocks_exit(monkeypatch):
+def test_run_dispatch_blocks_exit_and_lua_variants(monkeypatch):
     _cap_dispatch(monkeypatch)
-    with pytest.raises(hyprcontrol.HyprCommandError):
-        hyprcontrol.run_dispatch("hl.dsp.exit()")
+    for expr in ('hl.dsp.exit()', 'hl.dsp .exit({})', 'hl . dsp . exit()',
+                 'hl.dsp["exit"]({})', "hl.dsp['exit']()"):
+        with pytest.raises(hyprcontrol.HyprCommandError):
+            hyprcontrol.run_dispatch(expr)
+
+
+def test_ws_field_non_ascii_digit_is_quoted(monkeypatch):
+    calls = _cap_dispatch(monkeypatch)
+    hyprcontrol.goto_workspace("²")  # superscript-2: isdigit() True but not a Lua numeral
+    assert calls == ['hl.dsp.focus({ workspace = "²" })']
 
 
 def test_eval_raises_on_error_line(monkeypatch):

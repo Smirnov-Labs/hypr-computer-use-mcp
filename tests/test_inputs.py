@@ -121,3 +121,41 @@ def test_mouse_location_parses_cursorpos(monkeypatch):
 
     monkeypatch.setattr(subprocess, "run", lambda *a, **k: R())
     assert inputs.mouse_location() == {"x": 1234, "y": 567}
+
+
+def test_key_bare_capital_adds_shift(ui):
+    inputs.key("A")  # bare capital -> shift + KEY_A
+    assert (e.EV_KEY, e.KEY_LEFTSHIFT, 1) in ui.events
+    assert (e.EV_KEY, e.KEY_A, 1) in ui.events
+
+
+def test_key_bare_shifted_symbol_adds_shift(ui):
+    inputs.key("!")  # -> shift + KEY_1
+    assert (e.EV_KEY, e.KEY_LEFTSHIFT, 1) in ui.events
+    assert (e.EV_KEY, e.KEY_1, 1) in ui.events
+
+
+def test_layout_extent_uses_logical_size(monkeypatch):
+    import json
+    mons = [{"x": 0, "y": 0, "width": 3840, "height": 2160, "scale": 2.0}]
+
+    class R:
+        returncode = 0
+        stdout = json.dumps(mons)
+        stderr = ""
+
+    monkeypatch.setattr(subprocess, "run", lambda *a, **k: R())
+    assert inputs._layout_extent() == (1920.0, 1080.0)  # physical / scale
+
+
+def test_device_not_wedged_by_transient_extent_failure(monkeypatch):
+    monkeypatch.setattr(inputs, "_ui", None)
+    monkeypatch.setattr(inputs, "_extent", None)
+
+    def boom():
+        raise RuntimeError("transient hyprctl failure")
+
+    monkeypatch.setattr(inputs, "_layout_extent", boom)
+    with pytest.raises(RuntimeError):
+        inputs._device()
+    assert inputs._ui is None  # nothing committed -> a later call retries

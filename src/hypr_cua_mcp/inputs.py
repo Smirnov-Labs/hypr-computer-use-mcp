@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import json
 import subprocess
+import threading
 import time
 
 from evdev import AbsInfo, UInput
@@ -83,7 +84,8 @@ def _key_capabilities() -> list[int]:
 
 
 _ui: UInput | None = None
-_extent: tuple[int, int] | None = None
+_extent: tuple[float, float] | None = None
+_ui_lock = threading.Lock()
 
 
 def _button(name: str) -> int:
@@ -93,35 +95,49 @@ def _button(name: str) -> int:
         raise ValueError(f"unknown button {name!r}; use one of {sorted(_BUTTON)}")
 
 
-def _layout_extent() -> tuple[int, int]:
-    """(width, height) of the monitor bounding box in global px, from hyprctl."""
+def _layout_extent() -> tuple[float, float]:
+    """(width, height) of the monitor bounding box in LOGICAL global px, from hyprctl.
+
+    hyprctl reports width/height in PHYSICAL px but x/y in LOGICAL layout px, so a
+    scaled monitor's logical size is width/scale. The cursor and hyprctl
+    at/size/cursorpos are all logical, so the uinput abs axes must map to the
+    LOGICAL extent — otherwise one scaled monitor skews pointer accuracy everywhere.
+    """
     out = subprocess.run(
         ["hyprctl", "-j", "monitors"],
         capture_output=True, text=True, check=True, timeout=CMD_TIMEOUT,
     )
     mons = json.loads(out.stdout)
-    w = max((m["x"] + m["width"] for m in mons), default=0)
-    h = max((m["y"] + m["height"] for m in mons), default=0)
+    w = max((m["x"] + m["width"] / (m.get("scale") or 1.0) for m in mons), default=0)
+    h = max((m["y"] + m["height"] / (m.get("scale") or 1.0) for m in mons), default=0)
     if w <= 0 or h <= 0:
         raise RuntimeError("could not determine layout extent from `hyprctl monitors`")
     return w, h
 
 
 def _device() -> UInput:
-    """The process-lifetime virtual input device (created + settled once)."""
+    """The process-lifetime virtual input device (created + settled once).
+
+    Double-checked locking so pipelined tool calls can't race two devices; and we
+    compute the extent + build the device locally and only commit the globals after
+    BOTH succeed, so one transient hyprctl failure doesn't permanently wedge input.
+    """
     global _ui, _extent
     if _ui is None:
-        cap = {
-            e.EV_KEY: _key_capabilities(),
-            e.EV_ABS: [
-                (e.ABS_X, AbsInfo(0, 0, _ABS_MAX, 0, 0, 0)),
-                (e.ABS_Y, AbsInfo(0, 0, _ABS_MAX, 0, 0, 0)),
-            ],
-            e.EV_REL: [e.REL_WHEEL, e.REL_HWHEEL],
-        }
-        _ui = UInput(cap, name="hypr-cua-virtual-input", input_props=[e.INPUT_PROP_POINTER])
-        _extent = _layout_extent()
-        time.sleep(_SETTLE_S)  # let the compositor bind the device before first use
+        with _ui_lock:
+            if _ui is None:
+                extent = _layout_extent()  # may raise -> nothing committed; retried next call
+                cap = {
+                    e.EV_KEY: _key_capabilities(),
+                    e.EV_ABS: [
+                        (e.ABS_X, AbsInfo(0, 0, _ABS_MAX, 0, 0, 0)),
+                        (e.ABS_Y, AbsInfo(0, 0, _ABS_MAX, 0, 0, 0)),
+                    ],
+                    e.EV_REL: [e.REL_WHEEL, e.REL_HWHEEL],
+                }
+                dev = UInput(cap, name="hypr-cua-virtual-input", input_props=[e.INPUT_PROP_POINTER])
+                time.sleep(_SETTLE_S)  # let the compositor bind the device before first use
+                _extent, _ui = extent, dev  # commit only after both succeed
     return _ui
 
 
@@ -195,17 +211,18 @@ def type_text(text: str) -> None:
         _tap(ui, code, shift)
 
 
-def _resolve_key(token: str) -> int:
+def _resolve_key(token: str) -> tuple[int, bool]:
+    """Return (keycode, needs_shift) for a key token."""
     t = token.lower()
     if t in _NAMED:
-        return _NAMED[t]
+        return _NAMED[t], False
     if len(token) == 1 and token in _CHAR:
-        return _CHAR[token][0]
+        return _CHAR[token]  # (code, shift) — e.g. '!' -> (KEY_1, True)
     raise ValueError(f"unknown key {token!r}")
 
 
 def key(keyseq: str) -> None:
-    """Press a chord like 'ctrl+s', 'Return', 'alt+Tab', 'ctrl+shift+t'."""
+    """Press a chord like 'ctrl+s', 'Return', 'alt+Tab', 'ctrl+shift+t', '!'."""
     parts = [p for p in keyseq.split("+") if p]
     if not parts:
         raise ValueError("empty key sequence")
@@ -215,7 +232,9 @@ def key(keyseq: str) -> None:
         if mod.lower() not in _MODS:
             raise ValueError(f"unknown modifier {mod!r}; use ctrl/shift/alt/super")
         mod_codes.append(_MODS[mod.lower()])
-    key_code = _resolve_key(main)
+    key_code, need_shift = _resolve_key(main)
+    if need_shift and e.KEY_LEFTSHIFT not in mod_codes:
+        mod_codes.append(e.KEY_LEFTSHIFT)  # a bare shifted char ('A', '!') implies shift
     ui = _device()
     for c in mod_codes:
         ui.write(e.EV_KEY, c, 1)

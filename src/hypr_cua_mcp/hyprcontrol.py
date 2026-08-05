@@ -11,6 +11,7 @@ auditable — including focus_window, which is a dispatch here.
 """
 from __future__ import annotations
 
+import re
 import subprocess
 import time
 
@@ -48,13 +49,17 @@ def _dispatch(dsp_expr: str) -> str:
 
 def _lua_str(s: str) -> str:
     """Quote a Python str as a Lua string literal (double-quoted, escaped)."""
-    return '"' + str(s).replace("\\", "\\\\").replace('"', '\\"') + '"'
+    body = (
+        str(s).replace("\\", "\\\\").replace('"', '\\"')
+        .replace("\n", "\\n").replace("\r", "\\r")
+    )
+    return '"' + body + '"'
 
 
 def _ws_field(workspace) -> str:
-    """Lua value for a workspace: numeric -> bare number, else quoted string."""
+    """Lua value for a workspace: ASCII-numeric -> bare number, else quoted string."""
     ws = str(workspace).strip()
-    return ws if ws.isdigit() else _lua_str(ws)
+    return ws if (ws.isascii() and ws.isdigit()) else _lua_str(ws)
 
 
 def _addr(con_id: str) -> str:
@@ -130,9 +135,13 @@ def layout_message(message: str) -> str:
 
 def run_dispatch(dsp_expr: str) -> str:
     """Escape hatch: run hl.dispatch(<dsp_expr>) with the given Lua dispatcher
-    expression (e.g. 'hl.dsp.window.fullscreen({})'). `exit` is blocked."""
-    low = dsp_expr.lower()
-    if any(f"dsp.{d}" in low for d in _DENY):
+    expression (e.g. 'hl.dsp.window.fullscreen({})'). Denied verbs (`exit`, which
+    ends the whole Hyprland session) are blocked in any Lua spelling."""
+    # Lua is whitespace-insensitive and `t.x` == `t["x"]`, so we can't reliably
+    # substring-match the source (`hl.dsp .exit()`, `hl.dsp["exit"]` are the same
+    # call). Strip whitespace + quotes and reject any denied verb as a member name.
+    norm = re.sub(r"[\s'\"]+", "", dsp_expr).lower()
+    if any(d in norm for d in _DENY):
         raise HyprCommandError(f"command blocked: {sorted(_DENY)} would disrupt the session")
     _dispatch(dsp_expr)
     return f"dispatched: {dsp_expr}"

@@ -53,6 +53,14 @@ def test_get_outputs_primary_is_focused(monkeypatch):
     assert prim["current_workspace"] == "2"
 
 
+def test_get_outputs_reports_logical_size_for_scaled_monitor(monkeypatch):
+    mon = [{"id": 0, "name": "DP-1", "x": 3840, "y": 0, "width": 3840, "height": 2160,
+            "scale": 2.0, "focused": True, "activeWorkspace": {"name": "1"}}]
+    monkeypatch.setattr(hyprtree, "_json", lambda args: mon)
+    r = hyprtree.get_outputs()[0]["rect"]
+    assert r == {"x": 3840, "y": 0, "w": 1920, "h": 1080}  # logical = physical / scale
+
+
 def test_find_window(monkeypatch):
     _mock(monkeypatch, {"monitors": _MONITORS, "clients": _CLIENTS})
     assert hyprtree.find_window("0xbbb")["title"] == "web"

@@ -44,3 +44,24 @@ Confirm this is accurate on multi-monitor — it drives `screenshot_window`'s
 - Repo is **local-only** (not pushed). `.github/workflows/ci.yml` is untested for
   the Wayland deps; `evdev` builds a C-extension — confirm it installs on the CI
   runner before relying on CI.
+
+## 4. Monitor scale — mostly fixed, capture path still needs verification
+
+A code review found the coordinate math mixed physical `width/height` with logical
+`x/y`. **Fixed:** `hyprtree.get_outputs()` and `inputs._layout_extent()` now report
+logical size (`width/scale`), so the tree + pointer coordinate space is consistent
+(no-op at the current scale 1.0 everywhere; correct if a monitor is scaled).
+**Still open:** `capture.py` grabs the whole layout with `grim -` (physical-pixel
+image) and crops by the now-logical rect — for a `scale != 1` monitor those spaces
+differ, so `screenshot`/`screenshot_window` near a scaled monitor is unverified.
+Fix when a scaled monitor exists: capture per-output with `grim -o <name>` (physical)
+and scale the crop, or verify grim's multi-output image geometry.
+
+## 5. Review-noted minor tidy-ups (deferred, not correctness-critical)
+
+- `inputs._layout_extent`/`mouse_location` and `capture._grab_root` raise raw
+  subprocess errors instead of friendly module exceptions (unlike hyprtree/hyprcontrol/clipboard).
+- `move_window_to_workspace`/`set_floating` dispatch once and report success without
+  re-verifying state (a wrong reverse-engineered Lua field would silently no-op).
+- `server._focus_or_raise` + `hyprcontrol.focus_window` both call `find_window`
+  (~5-7 subprocess spawns per `type_text(con_id=…)`) — latency only.
