@@ -25,6 +25,23 @@ def _no_launch(monkeypatch):
     )
 
 
+def test_launch_chrome_includes_remote_allow_origins(monkeypatch):
+    # Chrome M111+ 403-rejects the DevTools WebSocket unless the connecting origin
+    # is allow-listed; the auto-launched browser must pass --remote-allow-origins.
+    seen = {}
+    monkeypatch.setattr(cdp, "_find_chrome", lambda binary=None: "/usr/bin/google-chrome")
+    monkeypatch.setattr(cdp, "_wait_reachable", lambda base, timeout: None)
+
+    class _P:
+        pid = 4321
+
+    monkeypatch.setattr(cdp, "_spawn", lambda argv: seen.update(argv=argv) or _P())
+    info = cdp.launch_chrome(port=9333, user_data_dir="/tmp/x")
+    assert "--remote-allow-origins=*" in seen["argv"]
+    assert "--remote-debugging-port=9333" in seen["argv"]
+    assert info["port"] == 9333
+
+
 # --- fakes ------------------------------------------------------------------
 
 class AutoWS:

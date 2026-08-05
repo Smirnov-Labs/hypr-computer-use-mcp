@@ -210,6 +210,10 @@ def launch_chrome(
         f"--user-data-dir={user_data_dir}",
         "--no-first-run",
         "--no-default-browser-check",
+        # Chrome M111+ 403-rejects the DevTools WebSocket handshake unless the
+        # connecting Origin is allow-listed. This is a dedicated, isolated,
+        # loopback-only browser, so allow the local origin the client dials from.
+        "--remote-allow-origins=*",
     ]
     if headless:
         argv.append("--headless=new")

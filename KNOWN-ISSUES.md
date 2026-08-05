@@ -88,7 +88,7 @@ capture → kill). Notes:
   `tmux_keys` sends interpreted keys (`C-c`, `Escape`, …).
 - **MCP reconnect needed** to expose the new tmux tools in a running server.
 
-## 7. CDP browser channel (`cdp.py`) — unit-tested only, live-UNVERIFIED
+## 7. CDP browser channel (`cdp.py`) — live smoke-tested 2026-08-05 ✓
 
 New in this branch: a **focus-free Chrome channel** so browser work can run on a
 non-visible ("copilot") workspace without stealing keyboard focus. `cdp.py` is a
@@ -113,7 +113,11 @@ first use (default port **9222**, fresh temp profile), or attaches to an existin
 via `HYPR_CUA_CDP_PORT` / `HYPR_CUA_CDP_USER_DATA_DIR` / `HYPR_CUA_CDP_BIN`; set
 `HYPR_CUA_CDP_AUTOLAUNCH=0` to require an already-running endpoint instead of launching.
 
-**⚠️ Caveat — the suite is FULLY MOCKED (no live Chrome).** Every test stubs the
+**Live smoke-tested 2026-08-05** against a throwaway headless Chrome (dedicated port,
+isolated profile): `list_targets`/`read_text`/`eval_js`/`type_text`/`click`/`close_tab`
+all worked end-to-end — after fixing a bug the mocks missed: **Chrome M111+ 403-rejects
+the DevTools WebSocket without `--remote-allow-origins`**, now in the auto-launch flags
+(regression-tested). **The suite itself is still fully mocked** (no Chrome in CI): every test stubs the
 HTTP `/json` and the WebSocket send/recv (and `_spawn` is a hard-fail tripwire), so
 **real Chrome behavior is unverified**: the actual DevTools reply shapes, that a
 freshly launched Chrome comes up within `LAUNCH_TIMEOUT`, `awaitPromise` timing,
