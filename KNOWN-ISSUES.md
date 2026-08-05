@@ -72,3 +72,18 @@ exists: capture per-output with `grim -o <name>` and scale the crop.
   (~5-7 subprocess spawns per `type_text(con_id=…)`) — latency only.
 - Repo is **local-only** (not pushed). `.github/workflows/ci.yml` untested for the
   Wayland deps; `evdev` builds a C-extension — confirm it installs on CI before relying on it.
+
+## 6. tmux copilot channel (new 2026-08-05) — shipped, live-validated
+
+`tmux.py` + tools `tmux_list/new/run/keys/read/kill` drive terminals with **zero
+screen footprint** on a dedicated **isolated socket** (`tmux -L hypr-cua`), so the
+model can run + read terminal work on a non-visible "workspace" without ever
+touching the user's real (default-socket) sessions. Live-validated (create → run →
+capture → kill). Notes:
+- The module execs `tmux` directly (list argv), so the user's zsh oh-my-zsh
+  tmux-plugin alias is bypassed — but a shell caller needs `command tmux`.
+- Captured output includes the user's chatty zsh startup (an alias-hint plugin
+  prints `Alias for: …`) — cosmetic, not a capture bug.
+- `run()` = `send-keys -l <cmd>` + a separate `Enter` (literal, no key reinterpret);
+  `tmux_keys` sends interpreted keys (`C-c`, `Escape`, …).
+- **MCP reconnect needed** to expose the new tmux tools in a running server.

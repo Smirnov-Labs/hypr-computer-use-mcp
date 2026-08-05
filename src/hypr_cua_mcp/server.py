@@ -24,7 +24,7 @@ import sys
 
 from mcp.server.mcpserver import MCPServer, Image
 
-from . import capture, clipboard, coords, hyprcontrol, hyprtree, inputs
+from . import capture, clipboard, coords, hyprcontrol, hyprtree, inputs, tmux
 
 mcp = MCPServer("hypr-cua", version="0.1.0")
 
@@ -249,6 +249,51 @@ def write_clipboard(text: str, selection: str = "clipboard", secret: bool = Fals
     server's action log (not built yet) and keeps it out of the return; the text
     still transits this tool call, so it appears in the MCP client's transcript."""
     return clipboard.write_clipboard(text, selection, secret)
+
+
+# --- tmux copilot: drive terminals invisibly (no window / no focus) ---------
+
+@mcp.tool()
+def tmux_list() -> str:
+    """List the copilot's tmux panes — session, pane, running command, size, state.
+
+    They live on a dedicated 'hypr-cua' tmux socket, isolated from your real
+    (default-socket) sessions. Detached = no window, no focus, zero screen
+    footprint — the way to run terminal work on a non-visible workspace."""
+    return json.dumps(tmux.list_panes(), indent=2)
+
+
+@mcp.tool()
+def tmux_new(name: str, command: str | None = None) -> str:
+    """Create a detached copilot session `name` running a shell (or `command`).
+    No window, no focus. Drive it with tmux_run/tmux_keys, read it with tmux_read."""
+    return f"created session {tmux.new_pane(name, command)}"
+
+
+@mcp.tool()
+def tmux_run(target: str, command: str) -> str:
+    """Type a shell command line into session `target` and press Enter. Read the
+    output afterward with tmux_read (the shell persists between calls)."""
+    return tmux.run(target, command)
+
+
+@mcp.tool()
+def tmux_keys(target: str, keys: str) -> str:
+    """Send interpreted tmux keys to `target` (e.g. 'C-c' to interrupt, 'Up',
+    'Escape', 'q') — for TUIs / control sequences, not literal command text."""
+    return tmux.send_keys(target, keys)
+
+
+@mcp.tool()
+def tmux_read(target: str, lines: int = 50) -> str:
+    """Capture session `target`'s terminal text (last `lines` incl. scrollback)."""
+    return tmux.read_pane(target, lines)
+
+
+@mcp.tool()
+def tmux_kill(target: str) -> str:
+    """Kill copilot session `target` (only touches the isolated 'hypr-cua' socket)."""
+    return tmux.kill(target)
 
 
 # --- Hyprland control (workspace / float / launch / layout) -----------------

@@ -1,7 +1,7 @@
 """Tests for server tool wiring: focus-verify safety, frame-id contract, errors."""
 import pytest
 
-from hypr_cua_mcp import clipboard, coords, hyprcontrol, hyprtree, inputs, server
+from hypr_cua_mcp import clipboard, coords, hyprcontrol, hyprtree, inputs, server, tmux
 
 
 def _frame(**kw):
@@ -145,3 +145,26 @@ def test_write_clipboard_delegates_and_hides_value(monkeypatch):
     out = server.write_clipboard("abc", selection="clipboard", secret=True)
     assert seen == {"text": "abc", "sel": "clipboard", "secret": True}
     assert "abc" not in out
+
+
+# --- tmux copilot wiring (delegate to the tmux module) ---
+
+def test_tmux_run_delegates(monkeypatch):
+    seen = {}
+    monkeypatch.setattr(tmux, "run",
+                        lambda target, command: seen.update(t=target, c=command) or "ran")
+    assert server.tmux_run("work", "echo hi") == "ran"
+    assert seen == {"t": "work", "c": "echo hi"}
+
+
+def test_tmux_read_passes_lines(monkeypatch):
+    seen = {}
+    monkeypatch.setattr(tmux, "read_pane",
+                        lambda target, lines: seen.update(t=target, n=lines) or "out")
+    assert server.tmux_read("work", lines=120) == "out"
+    assert seen == {"t": "work", "n": 120}
+
+
+def test_tmux_list_delegates(monkeypatch):
+    monkeypatch.setattr(tmux, "list_panes", lambda: [{"session": "work"}])
+    assert "work" in server.tmux_list()
