@@ -1,0 +1,36 @@
+#!/usr/bin/env bash
+# Dedicated "automation" Chrome for the hypr-cua CDP channel.
+#
+# A SEPARATE, PERSISTENT Chrome profile with the DevTools debugging port enabled,
+# so the copilot's cdp_* tools can drive it — while your MAIN Chrome stays
+# un-instrumented (drive that with the visual hypr tools instead). Log into only
+# the things you want the copilot to touch; those logins persist in this profile
+# across restarts.
+#
+# SECURITY: the debug port is loopback-only (127.0.0.1) and origin-restricted, but
+# it IS a control channel into THIS profile — any local process that reaches the
+# port can drive it. Keep only what you're comfortable automating logged in here.
+#
+# Usage:
+#   bin/hypr-cua-chrome        # launch it, log in, leave it open
+#   then in Claude:  cdp_targets   (lists this browser's tabs; cdp_* drive them)
+# Put it on its own workspace / bind a key if you like. Override the profile dir
+# or port with HYPR_CUA_CDP_USER_DATA_DIR / HYPR_CUA_CDP_PORT.
+set -euo pipefail
+
+PROFILE="${HYPR_CUA_CDP_USER_DATA_DIR:-$HOME/.local/share/hypr-cua-chrome}"
+PORT="${HYPR_CUA_CDP_PORT:-9222}"
+
+CHROME=""
+for bin in google-chrome-stable google-chrome chromium chromium-browser chrome; do
+  if command -v "$bin" >/dev/null 2>&1; then CHROME="$bin"; break; fi
+done
+: "${CHROME:?no chrome/chromium binary found on PATH}"
+
+mkdir -p "$PROFILE"
+exec "$CHROME" \
+  --user-data-dir="$PROFILE" \
+  --remote-debugging-port="$PORT" \
+  --remote-allow-origins="http://127.0.0.1:${PORT}" \
+  --no-first-run --no-default-browser-check \
+  "$@"

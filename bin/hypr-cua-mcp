@@ -7,4 +7,10 @@
 set -euo pipefail
 
 HERE="$(cd "$(dirname "$0")/.." && pwd)"
+
+# CDP channel: attach-only to the dedicated "automation" Chrome (start it with
+# bin/hypr-cua-chrome) on the default debug port — never auto-spawn a throwaway
+# browser from a tool call. Your main Chrome stays un-instrumented.
+export HYPR_CUA_CDP_AUTOLAUNCH=0
+
 exec uv run --directory "$HERE" hypr-cua-mcp
