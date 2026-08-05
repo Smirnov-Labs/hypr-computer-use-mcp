@@ -24,7 +24,7 @@ import sys
 
 from mcp.server.mcpserver import MCPServer, Image
 
-from . import capture, cdp, clipboard, coords, hyprcontrol, hyprtree, inputs, tmux
+from . import capture, cdp, clipboard, coords, hyprcontrol, hyprtree, inputs, taskrunner, tmux
 
 mcp = MCPServer("hypr-cua", version="0.1.0")
 
@@ -350,6 +350,49 @@ def cdp_type(target: str, selector: str, text: str) -> str:
 def cdp_close(target: str) -> str:
     """Close a tab (by id) in the copilot browser."""
     return cdp.close_tab(target)
+
+
+# --- task-runner: launch a job and watch it work (hidden tmux session) ------
+
+@mcp.tool()
+def task_start(name: str, command: str) -> str:
+    """Launch `command` as a background TASK in a hidden copilot tmux session — no
+    window, no focus, zero screen footprint. The command is wrapped so completion
+    is detectable (a `__TASK_DONE__:<exit_code>` sentinel), so you can poll it with
+    task_status. Returns the task's initial {name, state} as JSON. Names must be
+    unique and free of ':', '.', '/', and whitespace."""
+    return json.dumps(taskrunner.start(name, command))
+
+
+@mcp.tool()
+def task_status(name: str, tail: int = 20) -> str:
+    """Check a task: JSON {name, state, exit_code?, tail}. state is 'running' (still
+    going), 'done' (finished — `exit_code` 0 = success, non-zero = failure), or
+    'missing' (no such task). `tail` = that many last lines of its output."""
+    return json.dumps(taskrunner.status(name, tail), indent=2)
+
+
+@mcp.tool()
+def task_list() -> str:
+    """List all tasks with their state (running | done+exit_code) as JSON — the
+    copilot tmux sessions started via task_start (plain tmux sessions excluded)."""
+    return json.dumps(taskrunner.list(), indent=2)
+
+
+@mcp.tool()
+def task_send(name: str, text: str, enter: bool = True) -> str:
+    """Send input to a running task — e.g. answer a prompt it's blocked on. Default
+    types `text` + Enter; enter=False sends interpreted keys ('C-c', 'Up', 'Escape')
+    for control sequences. (Detecting that a task is waiting on input is best-effort:
+    read task_status's tail and answer accordingly.)"""
+    return taskrunner.send(name, text, enter)
+
+
+@mcp.tool()
+def task_stop(name: str) -> str:
+    """Stop a task by killing its hidden tmux session (only touches the isolated
+    'hypr-cua' copilot socket)."""
+    return taskrunner.stop(name)
 
 
 # --- Hyprland control (workspace / float / launch / layout) -----------------

@@ -126,3 +126,60 @@ test against a dedicated `--remote-debugging-port` Chrome on a scratch workspace
 `click`/`type` are v1 JS-injection (not `Input.dispatchMouseEvent`/`insertText`),
 so they won't fire native-only handlers or trusted-event checks — the synthetic-input
 path is a future stretch goal.
+
+## 8. Task-runner channel (`taskrunner.py`, new 2026-08-05) — unit-tested + live-validated
+
+Built on the §6 tmux channel: turns the copilot substrate into "launch a job and let
+the model supervise it." A **task** is a detached tmux session on the isolated
+`hypr-cua` socket — **no window, no focus, zero screen footprint** — that the model
+polls, reads, feeds input, and stops. MCP tools `task_start`, `task_status`,
+`task_list`, `task_send`, `task_stop`. Never touches the user's real (default-socket)
+sessions; tasks are namespaced under a **`task-` session prefix** so they're also
+distinct from the plain tmux-channel sessions (§6) on the same copilot socket.
+
+**Completion detection (the whole point).** A bare `tmux new-session -d -s name <cmd>`
+is torn down the instant `<cmd>` exits, losing its output/exit code. So `start` wraps
+the command:
+
+```
+sh -c '<command>'; printf '\n__TASK_DONE__:%s\n' "$?"; exec sleep 2147483647
+```
+
+- the command runs in its **own `sh -c` subshell** (shlex-quoted, so quotes in the
+  command are safe, and a bare `exit`/`exec` inside it only ends that child), then
+- a **sentinel line** `__TASK_DONE__:<exit_code>` is printed (`$?` captured), then
+- `exec sleep` **keeps the pane alive** so the sentinel stays readable after the
+  command finishes. (Reaped by `task_stop` / socket teardown.)
+
+`status`/`list` classify a captured pane purely from that sentinel:
+`running` (not printed yet) · `done` + `exit_code` (0 = success) · `missing` (no such
+session — decided by `tmux.list_panes()`, so a genuinely-finished task never reads as
+missing thanks to the keep-alive). The **last** sentinel-shaped line wins.
+
+**Live-validated 2026-08-05** end-to-end against a real tmux on an isolated throwaway
+socket (`tmux -L hypr-cua-smoke-<pid>`, killed after — never the user's sessions):
+`running → done` transition, exit-code capture (`0` and `3`), the `exit N`-in-command
+case, shlex-quoted commands with embedded quotes, an interactive `read` prompt
+answered via `task_send`, duplicate-name rejection, `task_list` states, and
+`task_stop → missing`. (Unit tests still fully mock the tmux boundary — no server.)
+
+**Caveats:**
+- **Interactive-prompt / "needs attention" detection is best-effort.** There is no
+  distinct `waiting-on-input` state — a task blocked on a prompt reads as `running`;
+  the model infers the prompt from `status`'s `tail` and answers with `task_send`
+  (text + Enter, the reliable path — verified live).
+- **`task_send(..., enter=False)` for `C-c`** sends SIGINT to the pane's foreground
+  group, which kills the **non-interactive** wrapper too — so the task tears down and
+  then reads as `missing`, not a clean `done`. That's expected: use `task_stop` for a
+  clean stop; reserve `enter=False` for TUI keys (arrows/Escape) and prompt keypresses.
+- **Backgrounding (`cmd &`) is inherently uncatchable** — the subshell returns
+  immediately, so the sentinel prints right away and the task reads `done` while the
+  child keeps running. Tasks should be foreground commands.
+- **The sentinel could in theory appear in a task's own output.** Mitigated by
+  requiring a full-line `^__TASK_DONE__:<n>$` match and taking the last one (the real
+  marker is always last, printed right before the keep-alive). A command whose final
+  printed line is *exactly* that string would be misclassified — negligible.
+- A **done** task's tmux pane still shows `live` (running the keep-alive `sleep`) in
+  `tmux_list`/`list_panes`; task state comes from the sentinel, not tmux liveness. The
+  lingering `sleep` is harmless and reaped by `task_stop`.
+- **MCP reconnect needed** to expose the new tools in a running server (as with §6/§7).

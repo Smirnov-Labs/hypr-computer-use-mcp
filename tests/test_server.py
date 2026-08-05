@@ -1,7 +1,9 @@
 """Tests for server tool wiring: focus-verify safety, frame-id contract, errors."""
 import pytest
 
-from hypr_cua_mcp import cdp, clipboard, coords, hyprcontrol, hyprtree, inputs, server, tmux
+from hypr_cua_mcp import (
+    cdp, clipboard, coords, hyprcontrol, hyprtree, inputs, server, taskrunner, tmux,
+)
 
 
 def _frame(**kw):
@@ -205,3 +207,54 @@ def test_cdp_type_delegates_and_hides_text(monkeypatch):
     out = server.cdp_type("T1", "#f", "s3kr3t")
     assert seen == {"t": "T1", "s": "#f", "x": "s3kr3t"}
     assert "s3kr3t" not in out  # value stays out of the tool's return
+
+
+# --- task-runner wiring (delegate to the taskrunner module) ---
+
+def test_task_start_delegates_and_serializes(monkeypatch):
+    seen = {}
+    monkeypatch.setattr(
+        taskrunner, "start",
+        lambda name, command: seen.update(n=name, c=command)
+        or {"name": name, "state": "running"},
+    )
+    out = server.task_start("build", "make all")
+    assert seen == {"n": "build", "c": "make all"}
+    assert "running" in out and "build" in out
+
+
+def test_task_status_delegates_and_serializes(monkeypatch):
+    seen = {}
+    monkeypatch.setattr(
+        taskrunner, "status",
+        lambda name, tail: seen.update(n=name, t=tail)
+        or {"name": name, "state": "done", "exit_code": 0, "tail": "ok"},
+    )
+    out = server.task_status("build", tail=5)
+    assert seen == {"n": "build", "t": 5}
+    assert '"state": "done"' in out and '"exit_code": 0' in out
+
+
+def test_task_list_delegates(monkeypatch):
+    monkeypatch.setattr(taskrunner, "list",
+                        lambda: [{"name": "build", "state": "running"}])
+    out = server.task_list()
+    assert "build" in out and "running" in out
+
+
+def test_task_send_delegates_with_enter_default(monkeypatch):
+    seen = {}
+    monkeypatch.setattr(
+        taskrunner, "send",
+        lambda name, text, enter: seen.update(n=name, x=text, e=enter) or "ran",
+    )
+    assert server.task_send("build", "yes") == "ran"
+    assert seen == {"n": "build", "x": "yes", "e": True}
+
+
+def test_task_stop_delegates(monkeypatch):
+    seen = {}
+    monkeypatch.setattr(taskrunner, "stop",
+                        lambda name: seen.update(n=name) or "stopped task build")
+    assert server.task_stop("build") == "stopped task build"
+    assert seen == {"n": "build"}
