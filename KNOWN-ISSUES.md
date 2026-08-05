@@ -87,3 +87,38 @@ capture → kill). Notes:
 - `run()` = `send-keys -l <cmd>` + a separate `Enter` (literal, no key reinterpret);
   `tmux_keys` sends interpreted keys (`C-c`, `Escape`, …).
 - **MCP reconnect needed** to expose the new tmux tools in a running server.
+
+## 7. CDP browser channel (`cdp.py`) — unit-tested only, live-UNVERIFIED
+
+New in this branch: a **focus-free Chrome channel** so browser work can run on a
+non-visible ("copilot") workspace without stealing keyboard focus. `cdp.py` is a
+synchronous CDP client (`websocket-client` for the WS, stdlib `urllib` for the
+`/json` HTTP — no `requests`); MCP tools `cdp_targets`, `cdp_open`, `cdp_navigate`,
+`cdp_eval`, `cdp_read`, `cdp_click`, `cdp_type`, `cdp_close`.
+
+**What it does (by construction / unit tests):**
+- Lists tabs via `http://127.0.0.1:<port>/json`; drives each tab over its
+  `webSocketDebuggerUrl` with framed `Runtime`/`Page`/`Target` commands (monotonic
+  `id`, unsolicited events skipped, `error`/`exceptionDetails` → `CdpError`).
+- `eval_js` returns JS values by value and surfaces JS throws; `read_text` returns
+  `{title,url,text}` (body.innerText); `click`/`type` inject `querySelector(...).click()`
+  / value-set + `input`/`change` events (works without window focus). `type_text`
+  returns a length summary, never the typed value.
+
+**Profile/port isolation (safety):** the endpoint is a **DEDICATED** Chrome —
+`ensure_browser()` auto-launches `google-chrome/chromium --remote-debugging-port=<port>
+--user-data-dir=<isolated tmp dir> --no-first-run --no-default-browser-check` on
+first use (default port **9222**, fresh temp profile), or attaches to an existing
+`--remote-debugging-port`. It **never opens the user's main profile.** Configurable
+via `HYPR_CUA_CDP_PORT` / `HYPR_CUA_CDP_USER_DATA_DIR` / `HYPR_CUA_CDP_BIN`; set
+`HYPR_CUA_CDP_AUTOLAUNCH=0` to require an already-running endpoint instead of launching.
+
+**⚠️ Caveat — the suite is FULLY MOCKED (no live Chrome).** Every test stubs the
+HTTP `/json` and the WebSocket send/recv (and `_spawn` is a hard-fail tripwire), so
+**real Chrome behavior is unverified**: the actual DevTools reply shapes, that a
+freshly launched Chrome comes up within `LAUNCH_TIMEOUT`, `awaitPromise` timing,
+large `innerText` frames, and CSP/cross-origin edge cases all still need a live smoke
+test against a dedicated `--remote-debugging-port` Chrome on a scratch workspace.
+`click`/`type` are v1 JS-injection (not `Input.dispatchMouseEvent`/`insertText`),
+so they won't fire native-only handlers or trusted-event checks — the synthetic-input
+path is a future stretch goal.
