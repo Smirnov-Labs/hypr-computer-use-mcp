@@ -44,6 +44,35 @@ def test_read_rejects_invalid_selection():
         clipboard.read_clipboard("middle")
 
 
+def _decode_error():
+    # what subprocess.run(text=True) raises when the selection is binary (e.g. a PNG:
+    # first byte 0x89) — this is the real crash seen live against an image clipboard.
+    return UnicodeDecodeError("utf-8", b"\x89", 0, 1, "invalid start byte")
+
+
+def test_read_non_text_clipboard_returns_sentinel_not_crash(monkeypatch):
+    def fake_run(argv, **kw):
+        if "--list-types" in argv:
+            return _completed(0, stdout="image/png\n")
+        raise _decode_error()  # the paste of binary bytes
+
+    monkeypatch.setattr(clipboard, "_run", fake_run)
+    out = clipboard.read_clipboard()
+    assert "non-text" in out
+    assert "image/png" in out  # tells the caller what's actually on the clipboard
+
+
+def test_read_non_text_clipboard_without_known_types(monkeypatch):
+    def fake_run(argv, **kw):
+        if "--list-types" in argv:
+            return _completed(1)  # list-types itself failed -> unknown
+        raise _decode_error()
+
+    monkeypatch.setattr(clipboard, "_run", fake_run)
+    out = clipboard.read_clipboard()
+    assert "non-text" in out  # still degrades gracefully, never raises
+
+
 def test_run_sets_a_timeout(monkeypatch):
     seen = {}
 

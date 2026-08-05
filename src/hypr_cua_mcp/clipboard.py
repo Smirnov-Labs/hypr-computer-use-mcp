@@ -54,14 +54,33 @@ def _copy_argv(sel: str) -> list[str]:
     return ["wl-copy"] + (["--primary"] if sel == "primary" else [])
 
 
+def _list_types(sel: str) -> list[str]:
+    """MIME types the selection is offered as (e.g. ['image/png']). [] on failure."""
+    argv = ["wl-paste", "--list-types"] + (["--primary"] if sel == "primary" else [])
+    r = _run(argv)
+    if r.returncode != 0:
+        return []
+    return [t.strip() for t in (r.stdout or "").splitlines() if t.strip()]
+
+
 def read_clipboard(selection: str = "clipboard") -> str:
     """Return the text of a Wayland selection ('clipboard' or 'primary').
 
     Returns "" when the selection is empty (wl-paste exits non-zero with
     "Nothing is copied"; treated as empty, not an error).
+
+    If the selection holds non-text data (e.g. an image copied from a browser —
+    wl-paste emits raw bytes that aren't valid UTF-8), returns a descriptive
+    "<non-text clipboard: ...>" placeholder instead of raising, so a stray binary
+    clipboard can't crash a read.
     """
     sel = _sel(selection)
-    r = _run(_paste_argv(sel))
+    try:
+        r = _run(_paste_argv(sel))
+    except UnicodeDecodeError:
+        types = _list_types(sel)
+        desc = ", ".join(types) if types else "unknown binary data"
+        return f"<non-text clipboard: {desc}>"
     return r.stdout if r.returncode == 0 else ""
 
 

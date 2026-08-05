@@ -1,61 +1,66 @@
 # Known issues / open items (v0.1)
 
-Built and unit-tested autonomously on hexane's multi-monitor Hyprland. These need a
-human's eyes before trusting the interaction path end-to-end.
+Built and unit-tested autonomously, then **live-validated on 2026-08-05** by driving
+hexane's real 3-monitor Hyprland from an isolated scratch workspace.
 
-## 1. Pointer focus into windows — VERIFY FIRST (the important one)
+## 1. Pointer focus into windows — RESOLVED (click-to-focus works)
 
-**What works (verified live):** the self-owned uinput mouse **moves the cursor
-accurately** (~1px), Hyprland **lists it as a recognized Mouse**, and **monitor
-focus follows** it (cursor on DP-1 → DP-1 focused, etc.).
+Live test result: the essential interaction path **works end-to-end**.
 
-**What didn't verify:** in synthetic tests, hovering/clicking a window did NOT move
-the **keyboard/window** focus (`hyprctl activewindow`) onto it — focus stayed pinned
-on one window. `input:follow_mouse=1` and `input:mouse_refocus=true` are both set,
-so a *physical* mouse should focus-follow.
+**Verified live (2026-08-05):**
+- Synthetic uinput pointer positioning is **pixel-accurate across monitors**
+  (warped DP-1 → DP-2, landed within 1px of target).
+- **Click focuses the clicked window.** Clicked the left of two tiled scratch
+  terminals → `list_windows` focus moved off the right one onto the clicked one,
+  and the focus border followed. This is all the practical `screenshot → click →
+  type` flow needs.
+- `type_text` and clipboard paste then land in the clicked window (see §3).
 
-**Most likely cause:** the test harness's `visible` heuristic (window's ws == its
-monitor's active ws) gave false positives on this multi-monitor + Lua-config setup,
-so the tests hovered windows that weren't actually on-screen → clicks landed on
-empty/covered regions. In the real flow — screenshot the *actual* visible screen,
-click what you see — this should work.
+**Minor limitation (not blocking):** hover alone does **not** move focus with the
+synthetic pointer — warping the cursor over a window under `input:follow_mouse=1`
+does not trigger Hyprland's focus-follow (the *physical* mouse does focus-follow).
+So last session's "focus didn't follow" was the hover path, not clicking.
+- **Always click to focus; don't rely on hover.** The tools already do this
+  (`click`, and `type_text(con_id=…)`/`key(con_id=…)` focus-first).
+- **If hover-follow is ever wanted:** after the absolute warp, emit a tiny relative
+  motion (`EV_REL REL_X +1/-1`) so wlroots processes a real motion delta and
+  recomputes pointer focus. Needs `REL_X`/`REL_Y` added to the uinput caps and a
+  live retest — deferred, since click-to-focus already covers the real use case.
 
-**To resolve (interactive):**
-1. Does the *physical* mouse focus-follow between windows on DP-1/DP-2/HDMI-A-2?
-2. `screenshot(output)` a monitor → `click` a clearly-visible window → does focus
-   land (check `list_windows` focused / `get_mouse`)?
-3. If a genuinely-visible window still won't focus on click, the virtual pointer
-   needs deeper seat-integration work (or a `hl.dsp.focus` + pointer-warp combo).
+## 2. `hyprtree.list_windows` `visible` flag — looks correct
 
-## 2. `hyprtree.list_windows` `visible` flag
+Live multi-monitor readings were consistent: a window flipped to `visible:false`
+exactly when its monitor switched away from its workspace, and the on-screen tiled
+windows read `visible:true`. The false-positive worry from last session did not
+reproduce. Keep an eye on it under stacked/special workspaces.
 
-`visible = (window's workspace == its monitor's active workspace) and not hidden`.
-Confirm this is accurate on multi-monitor — it drives `screenshot_window`'s
-"not visible" guard and (above) confused the focus tests. If wrong,
-`screenshot_window` can grab the wrong region.
+## 3. type_text / clipboard — live-verified
 
-## 3. Smaller items
+Verified live by typing into a focused terminal and reading the shell result back
+from a file:
+- `type_text` emits correct keystrokes incl. **capitals and shifted symbols**
+  (`hypr_cua_TYPE_ok > /tmp/…` round-tripped exactly), and embedded `\n` = Enter.
+- `write_clipboard` + `key('ctrl+shift+v')` pastes the exact value into the window.
 
-- `type_text` is **US-ASCII only** (unmapped chars skipped); non-US xkb layouts
-  unverified against the evdev keycodes. Emission is unit-tested; live char output
-  into a genuinely-focused window not yet confirmed.
-- `focus_window(address)` is best-effort under `follow_mouse=1` (documented) —
-  prefer click-to-focus.
-- Repo is **local-only** (not pushed). `.github/workflows/ci.yml` is untested for
-  the Wayland deps; `evdev` builds a C-extension — confirm it installs on the CI
-  runner before relying on CI.
+Still **US-ASCII only** (unmapped chars skipped); non-US xkb layouts unverified
+against the evdev keycodes.
 
-## 4. Monitor scale — mostly fixed, capture path still needs verification
+## 3b. read_clipboard on binary selections — FIXED (2026-08-05)
 
-A code review found the coordinate math mixed physical `width/height` with logical
-`x/y`. **Fixed:** `hyprtree.get_outputs()` and `inputs._layout_extent()` now report
-logical size (`width/scale`), so the tree + pointer coordinate space is consistent
-(no-op at the current scale 1.0 everywhere; correct if a monitor is scaled).
-**Still open:** `capture.py` grabs the whole layout with `grim -` (physical-pixel
-image) and crops by the now-logical rect — for a `scale != 1` monitor those spaces
-differ, so `screenshot`/`screenshot_window` near a scaled monitor is unverified.
-Fix when a scaled monitor exists: capture per-output with `grim -o <name>` (physical)
-and scale the crop, or verify grim's multi-output image geometry.
+Found live: with an **image on the clipboard** (browser "copy image" → `image/png`),
+`read_clipboard` crashed with `UnicodeDecodeError: …byte 0x89` because
+`subprocess.run(text=True)` tried to UTF-8-decode PNG bytes. Now it catches the
+decode error and returns `"<non-text clipboard: image/png>"` (via `wl-paste
+--list-types`) instead of raising. Covered by two new tests.
+
+## 4. Monitor scale — capture path still needs a scaled monitor to verify
+
+`hyprtree.get_outputs()` and `inputs._layout_extent()` report logical size
+(`width/scale`), so tree + pointer coordinate spaces are consistent (all monitors
+are scale 1.0 today, so this was a no-op in the live test). **Still open:**
+`capture.py` grabs the whole layout with `grim -` (physical pixels) and crops by the
+logical rect — for a `scale != 1` monitor those differ. Fix when a scaled monitor
+exists: capture per-output with `grim -o <name>` and scale the crop.
 
 ## 5. Review-noted minor tidy-ups (deferred, not correctness-critical)
 
@@ -65,3 +70,5 @@ and scale the crop, or verify grim's multi-output image geometry.
   re-verifying state (a wrong reverse-engineered Lua field would silently no-op).
 - `server._focus_or_raise` + `hyprcontrol.focus_window` both call `find_window`
   (~5-7 subprocess spawns per `type_text(con_id=…)`) — latency only.
+- Repo is **local-only** (not pushed). `.github/workflows/ci.yml` untested for the
+  Wayland deps; `evdev` builds a C-extension — confirm it installs on CI before relying on it.
