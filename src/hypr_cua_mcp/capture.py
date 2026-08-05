@@ -1,8 +1,9 @@
-"""Screenshot capture: ImageMagick `import` -> Pillow crop/downscale -> PNG bytes.
+"""Screenshot capture: grim -> Pillow crop/downscale -> PNG bytes.
 
-We grab the whole X root (all outputs) once, then crop to the requested region
-in Pillow. The crop box is validated first (`_crop_box`) so an off-screen or
-degenerate window/output rect fails with a clear error instead of an opaque
+We grab the whole Wayland layout (all outputs, composited at their global
+positions) once with `grim`, then crop to the requested region in Pillow. The
+crop box is validated first (`_crop_box`) so an off-screen or degenerate
+window/output rect fails with a clear error instead of an opaque
 Pillow/ZeroDivision exception.
 """
 from __future__ import annotations
@@ -20,7 +21,7 @@ from .coords import CaptureFrame
 # are exactly the pixels we scaled and mapped.
 MAX_LONG_EDGE = 1568
 MAX_PIXELS = 1_150_000
-GRAB_TIMEOUT = 15  # seconds; bound a hung X server / ImageMagick
+GRAB_TIMEOUT = 15  # seconds; bound a hung compositor / grim
 
 
 class CaptureError(ValueError):
@@ -34,9 +35,14 @@ class Shot:
 
 
 def _grab_root() -> PILImage.Image:
-    """Grab the entire X root window (all outputs) as a Pillow image."""
+    """Grab the entire Wayland layout (all outputs) as a Pillow image.
+
+    `grim` with no -o/-g captures every output composited into one image sized to
+    the layout bounding box, with the image origin at global (0,0). That lets us
+    crop by global coordinates exactly as the X11 root-grab did.
+    """
     proc = subprocess.run(
-        ["import", "-silent", "-window", "root", "png:-"],
+        ["grim", "-t", "png", "-"],
         capture_output=True,
         check=True,
         timeout=GRAB_TIMEOUT,
@@ -73,7 +79,7 @@ def _fit_scale(w: int, h: int) -> float:
 
 
 def capture_region(rx: int, ry: int, rw: int, rh: int, label: str) -> Shot:
-    """Capture the global-X rectangle (rx,ry,rw,rh), downscaled to the API budget."""
+    """Capture the global rectangle (rx,ry,rw,rh), downscaled to the API budget."""
     root = _grab_root()
     x0, y0, x1, y1 = _crop_box(root.width, root.height, rx, ry, rw, rh)
 
