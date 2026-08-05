@@ -1,7 +1,7 @@
 """Tests for server tool wiring: focus-verify safety, frame-id contract, errors."""
 import pytest
 
-from hypr_cua_mcp import clipboard, coords, i3control, i3tree, inputs, server
+from hypr_cua_mcp import clipboard, coords, hyprcontrol, hyprtree, inputs, server
 
 
 def _frame(**kw):
@@ -11,31 +11,28 @@ def _frame(**kw):
     return coords.CaptureFrame(**d)
 
 
-# --- #1b: keyboard input must never fire when focus can't be verified ---
+# --- keyboard input must never fire when focus can't be verified ---
 
 def test_type_text_raises_and_does_not_type_when_focus_fails(monkeypatch):
-    monkeypatch.setattr(i3tree, "find_window", lambda cid: {"id": cid})
-    monkeypatch.setattr(i3tree, "focus_window", lambda cid: False)  # focus didn't land
+    monkeypatch.setattr(hyprtree, "find_window", lambda cid: {"id": cid})
+    monkeypatch.setattr(hyprcontrol, "focus_window", lambda cid: False)  # focus didn't land
     typed = []
     monkeypatch.setattr(inputs, "type_text", lambda t: typed.append(t))
-    monkeypatch.setattr(inputs, "reset_idle", lambda: None)
     with pytest.raises(Exception):
-        server.type_text("rm -rf /", con_id=57)
+        server.type_text("rm -rf /", con_id="0xabc")
     assert typed == []  # the whole point: no keystrokes went anywhere
 
 
 def test_type_text_raises_for_missing_window(monkeypatch):
-    monkeypatch.setattr(i3tree, "find_window", lambda cid: None)
-    monkeypatch.setattr(inputs, "reset_idle", lambda: None)
+    monkeypatch.setattr(hyprtree, "find_window", lambda cid: None)
     with pytest.raises(Exception):
-        server.type_text("x", con_id=999)
+        server.type_text("x", con_id="0xgone")
 
 
-# --- #5 / #4: pointer tools require a valid, current capture frame ---
+# --- pointer tools require a valid, current capture frame ---
 
 def test_click_without_screenshot_raises(monkeypatch):
     monkeypatch.setattr(coords, "frames", coords.FrameStore())  # no capture yet
-    monkeypatch.setattr(inputs, "reset_idle", lambda: None)
     with pytest.raises(coords.NoActiveCapture):
         server.click(10, 10)
 
@@ -44,7 +41,6 @@ def test_click_rejects_stale_frame_id(monkeypatch):
     store = coords.FrameStore()
     store.set_last(_frame())
     monkeypatch.setattr(coords, "frames", store)
-    monkeypatch.setattr(inputs, "reset_idle", lambda: None)
     monkeypatch.setattr(inputs, "click", lambda *a, **k: pytest.fail("must not click"))
     with pytest.raises(coords.StaleFrame):
         server.click(10, 10, frame_id="cap-bogus")
@@ -54,7 +50,6 @@ def test_click_maps_through_resolved_frame(monkeypatch):
     store = coords.FrameStore()
     fid = store.set_last(_frame())  # region origin (100,100), scale 1.0
     monkeypatch.setattr(coords, "frames", store)
-    monkeypatch.setattr(inputs, "reset_idle", lambda: None)
     got = {}
     monkeypatch.setattr(inputs, "click",
                         lambda gx, gy, button="left": got.update(gx=gx, gy=gy))
@@ -62,32 +57,32 @@ def test_click_maps_through_resolved_frame(monkeypatch):
     assert (got["gx"], got["gy"]) == (110, 110)
 
 
-# --- #12: validation failures raise (SDK turns them into is_error) ---
+# --- validation failures raise (SDK turns them into is_error) ---
 
 def test_screenshot_unknown_output_raises(monkeypatch):
-    monkeypatch.setattr(i3tree, "get_outputs",
-                        lambda: [{"name": "DP-0", "primary": True,
+    monkeypatch.setattr(hyprtree, "get_outputs",
+                        lambda: [{"name": "DP-1", "primary": True,
                                   "rect": {"x": 0, "y": 0, "w": 100, "h": 100}}])
     with pytest.raises(ValueError):
         server.screenshot(output="NOPE")
 
 
-# --- i3control wiring ---
+# --- hyprcontrol wiring ---
 
 def test_launch_resets_idle_and_delegates(monkeypatch):
     seen = {}
     monkeypatch.setattr(inputs, "reset_idle", lambda: seen.setdefault("idle", True))
-    monkeypatch.setattr(i3control, "launch", lambda cmd: seen.setdefault("cmd", cmd) or "ok")
-    server.launch("xterm -name foo")
-    assert seen == {"idle": True, "cmd": "xterm -name foo"}
+    monkeypatch.setattr(hyprcontrol, "launch", lambda cmd: seen.setdefault("cmd", cmd) or "ok")
+    server.launch("alacritty")
+    assert seen == {"idle": True, "cmd": "alacritty"}
 
 
 def test_move_window_to_workspace_delegates(monkeypatch):
     seen = {}
-    monkeypatch.setattr(i3control, "move_window_to_workspace",
+    monkeypatch.setattr(hyprcontrol, "move_window_to_workspace",
                         lambda cid, ws: seen.update(cid=cid, ws=ws) or "moved")
-    server.move_window_to_workspace(42, "5")
-    assert seen == {"cid": 42, "ws": "5"}
+    server.move_window_to_workspace("0xabc", "5")
+    assert seen == {"cid": "0xabc", "ws": "5"}
 
 
 # --- clipboard wiring (delegate; write muzzles the value) ---

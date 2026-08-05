@@ -1,17 +1,20 @@
-"""i3-aware computer-use MCP server (X11).
+"""Hyprland/Wayland computer-use MCP server.
 
-Tools let a model SEE the desktop (per-output / per-window screenshots),
-UNDERSTAND it (i3 tree), and DRIVE it (click / type / key / scroll).
+Tools let a model SEE the desktop (per-output / per-window screenshots via grim),
+UNDERSTAND it (the hyprctl tree), and DRIVE it (click / type / key / scroll via a
+uinput device).
 
 Two safety contracts enforced here:
 - Pointer tools take the `frame_id` of the screenshot they were reasoned against,
   and the server rejects a stale/absent one instead of silently mapping against
   "whatever screenshot happened last" (races) or raw global pixels (no screenshot).
-- Keyboard tools with a `con_id` VERIFY focus actually landed before sending any
-  keystroke — a stale con_id fails loudly rather than typing into the wrong window.
+- Keyboard tools with a `con_id` (window address) VERIFY focus actually landed
+  before sending any keystroke — a stale address fails loudly rather than typing
+  into the wrong window.
 
-Scope: read + focus + input + i3 control (workspaces / layout / launch, in
-i3control.py; the `run_i3` escape hatch blocks `exit`).
+Scope: read + focus + input + Hyprland control (workspaces / float / launch, in
+hyprcontrol.py; the `run_dispatch` escape hatch blocks `exit`). Window ids are
+Hyprland addresses ("0x...") from list_windows.
 """
 from __future__ import annotations
 
@@ -21,7 +24,7 @@ import sys
 
 from mcp.server.mcpserver import MCPServer, Image
 
-from . import capture, clipboard, coords, i3control, i3tree, inputs
+from . import capture, clipboard, coords, hyprcontrol, hyprtree, inputs
 
 mcp = MCPServer("hypr-cua", version="0.1.0")
 
@@ -45,25 +48,25 @@ def _shot_response(shot: capture.Shot):
 
 @mcp.tool()
 def list_windows() -> str:
-    """List all i3-managed windows: con id, class, title, workspace, output,
-    global geometry, focus/visibility. Use the `id` for focus/screenshot tools."""
-    return json.dumps(i3tree.list_windows(), indent=2)
+    """List all Hyprland windows: id (address), class, title, workspace, output,
+    global geometry, floating/focus/visibility. Use the `id` for focus/screenshot."""
+    return json.dumps(hyprtree.list_windows(), indent=2)
 
 
 @mcp.tool()
 def get_outputs() -> str:
-    """List active outputs (monitors) with their global geometry and workspace."""
-    return json.dumps(i3tree.get_outputs(), indent=2)
+    """List active outputs (monitors) with their global geometry, scale, workspace."""
+    return json.dumps(hyprtree.get_outputs(), indent=2)
 
 
 @mcp.tool(structured_output=False)
 def screenshot(output: str | None = None):
-    """Screenshot one output (monitor); defaults to the primary output.
+    """Screenshot one output (monitor); defaults to the focused output.
 
-    Pass an output name from get_outputs (e.g. "DP-0") to target another monitor.
+    Pass an output name from get_outputs (e.g. "DP-1") to target another monitor.
     Returns the image plus a frame_id — pass that frame_id to click/move/etc.
     """
-    outs = i3tree.get_outputs()
+    outs = hyprtree.get_outputs()
     if output:
         target = next((o for o in outs if o["name"] == output), None)
         if target is None:
@@ -71,7 +74,7 @@ def screenshot(output: str | None = None):
                 f"no such output {output!r}; available: {[o['name'] for o in outs]}"
             )
     else:
-        target = i3tree.primary_output(outs)
+        target = hyprtree.primary_output(outs)
     if target is None:
         raise RuntimeError("no active outputs found")
     r = target["rect"]
@@ -80,26 +83,26 @@ def screenshot(output: str | None = None):
 
 
 @mcp.tool(structured_output=False)
-def screenshot_window(con_id: int):
-    """Full-resolution screenshot cropped to a single window (by i3 con id).
+def screenshot_window(con_id: str):
+    """Full-resolution screenshot cropped to a single window (by address).
 
-    NOTE: this crops the root grab by the window's *geometry*; it does not verify
-    the window is the topmost content there. For a window in a tabbed/stacking
-    container that isn't the active child, the pixels shown may be a sibling. A
-    warning is added to the caption when the window isn't focused.
+    NOTE: this crops the layout grab by the window's *geometry*. The window must be
+    on its monitor's active workspace (else the region shows whatever IS there);
+    a floating window sitting on top can also occlude it. A warning is added to the
+    caption when the window isn't focused.
     """
-    w = i3tree.find_window(con_id)
+    w = hyprtree.find_window(con_id)
     if w is None:
-        raise ValueError(f"no window with con id {con_id}; call list_windows first")
+        raise ValueError(f"no window with address {con_id}; call list_windows first")
     if not w["visible"]:
         raise ValueError(
-            f"window {con_id} ({w['wm_class']}) is on non-visible workspace "
-            f"{w['workspace']!r}; focus_window it first, or screenshot its output"
+            f"window {con_id} ({w['wm_class']}) is not on its monitor's active "
+            f"workspace ({w['workspace']!r}); focus_window it first, or screenshot its output"
         )
     r = w["rect"]
     label = f"window {con_id} ({w['wm_class'] or '?'}: {w['title'] or ''})".strip()
     if not w["focused"]:
-        label += " [not focused — if it's in a tabbed/stacked container these pixels may be a sibling window]"
+        label += " [not focused — a floating window on top may occlude these pixels]"
     shot = capture.capture_region(r["x"], r["y"], r["w"], r["h"], label)
     return _shot_response(shot)
 
@@ -163,43 +166,43 @@ def scroll(x: float, y: float, direction: str = "down", amount: int = 3,
 
 # --- keyboard + focus -------------------------------------------------------
 
-def _focus_or_raise(con_id: int) -> None:
-    """Focus con_id, or raise — so keystrokes never go to an unverified window."""
-    if i3tree.find_window(con_id) is None:
-        raise ValueError(f"no window with con id {con_id}; call list_windows first")
-    if not i3tree.focus_window(con_id):
+def _focus_or_raise(con_id: str) -> None:
+    """Focus con_id (address), or raise — so keystrokes never go to an unverified window."""
+    if hyprtree.find_window(con_id) is None:
+        raise ValueError(f"no window with address {con_id}; call list_windows first")
+    if not hyprcontrol.focus_window(con_id):
         raise RuntimeError(
-            f"could not focus con {con_id} (window gone, or criteria matched "
-            "nothing); refusing to send input to the wrong window"
+            f"could not focus window {con_id} (gone, or focus did not land); "
+            "refusing to send input to the wrong window"
         )
 
 
 @mcp.tool()
-def focus_window(con_id: int) -> str:
-    """Give i3 keyboard focus to a window (by con id). Raises if focus can't land."""
+def focus_window(con_id: str) -> str:
+    """Give keyboard focus to a window (by address). Raises if focus can't land."""
     _focus_or_raise(con_id)
-    return f"focused con {con_id}"
+    return f"focused {con_id}"
 
 
 @mcp.tool()
-def type_text(text: str, con_id: int | None = None) -> str:
-    """Type text into the focused window. If con_id is given, focus it first and
-    fail (no keystrokes sent) if that focus can't be verified.
+def type_text(text: str, con_id: str | None = None) -> str:
+    """Type text into the focused window. If con_id (address) is given, focus it
+    first and fail (no keystrokes sent) if that focus can't be verified.
 
-    NOTE: embedded newlines are Enter keypresses (xdotool behavior), so multi-line
-    text submits line-by-line in single-line fields.
+    NOTE: US-ASCII only (uinput has no unicode-compose path); unmapped characters
+    are skipped, and embedded newlines are Enter keypresses.
     """
     if con_id is not None:
         _focus_or_raise(con_id)
     inputs.reset_idle()
     inputs.type_text(text)
-    return f"typed {len(text)} chars" + (f" into con {con_id}" if con_id is not None else "")
+    return f"typed {len(text)} chars" + (f" into {con_id}" if con_id is not None else "")
 
 
 @mcp.tool()
-def key(keys: str, con_id: int | None = None) -> str:
-    """Press a key/chord in xdotool syntax (e.g. 'ctrl+s', 'Return'). If con_id is
-    given, focus it first and fail if that focus can't be verified."""
+def key(keys: str, con_id: str | None = None) -> str:
+    """Press a key/chord (e.g. 'ctrl+s', 'Return', 'alt+Tab'). If con_id (address)
+    is given, focus it first and fail if that focus can't be verified."""
     if con_id is not None:
         _focus_or_raise(con_id)
     inputs.reset_idle()
@@ -217,14 +220,14 @@ def get_mouse() -> str:
 
 @mcp.tool()
 def read_clipboard(selection: str = "clipboard") -> str:
-    """Read the text of an X selection: 'clipboard' (Ctrl-C / Ctrl-Shift-V) or
-    'primary' (select / middle-click). Returns '' if empty or unowned."""
+    """Read the text of a Wayland selection: 'clipboard' (Ctrl-C / Ctrl-Shift-V)
+    or 'primary' (select / middle-click). Returns '' if empty."""
     return clipboard.read_clipboard(selection)
 
 
 @mcp.tool()
 def write_clipboard(text: str, selection: str = "clipboard", secret: bool = False) -> str:
-    """Set an X selection ('clipboard' or 'primary') to text, then paste with
+    """Set a Wayland selection ('clipboard' or 'primary') to text, then paste with
     key('ctrl+v' or 'ctrl+shift+v') or a middle-click. Returns only a length
     summary — never the value. secret=True marks the value for redaction in this
     server's action log (not built yet) and keeps it out of the return; the text
@@ -232,60 +235,61 @@ def write_clipboard(text: str, selection: str = "clipboard", secret: bool = Fals
     return clipboard.write_clipboard(text, selection, secret)
 
 
-# --- i3 control (option 2: workspace / layout / launch) ---------------------
+# --- Hyprland control (workspace / float / launch / layout) -----------------
 
 @mcp.tool()
 def launch(command: str) -> str:
-    """Launch an app via i3 `exec` (runs `command` through sh -c). Opens on the
-    current workspace — pair with goto_workspace or move_window_to_workspace to
-    place it elsewhere."""
+    """Launch an app via Hyprland's exec dispatcher. Opens on the current
+    workspace — pair with goto_workspace or move_window_to_workspace to place it."""
     inputs.reset_idle()
-    return i3control.launch(command)
+    return hyprcontrol.launch(command)
 
 
 @mcp.tool()
 def goto_workspace(workspace: str) -> str:
-    """Switch the focused output to a workspace (created if absent). A numeric
-    name uses i3 `number` matching; other names are matched literally."""
-    return i3control.goto_workspace(workspace)
+    """Switch the focused monitor to a workspace (created if absent). Numeric names
+    match by number; other names are matched literally."""
+    return hyprcontrol.goto_workspace(workspace)
 
 
 @mcp.tool()
-def move_window_to_workspace(con_id: int, workspace: str) -> str:
-    """Move a window (by con id) to a workspace without switching your view."""
-    return i3control.move_window_to_workspace(con_id, workspace)
+def move_window_to_workspace(con_id: str, workspace: str) -> str:
+    """Move a window (by address) to a workspace without following it."""
+    return hyprcontrol.move_window_to_workspace(con_id, workspace)
 
 
 @mcp.tool()
-def set_floating(con_id: int, enable: bool = True) -> str:
-    """Enable/disable floating for a window (by con id)."""
-    return i3control.set_floating(con_id, enable)
+def set_floating(con_id: str, enable: bool = True) -> str:
+    """Enable/disable floating for a window (by address)."""
+    return hyprcontrol.set_floating(con_id, enable)
 
 
 @mcp.tool()
-def set_layout(con_id: int, layout: str) -> str:
-    """Set a container's layout: splith|splitv|tabbed|stacking|default|toggle split."""
-    return i3control.set_layout(con_id, layout)
+def layout_message(message: str) -> str:
+    """Send a message to the active layout engine (dwindle/master), e.g.
+    'togglesplit', 'swapsplit', 'orientationnext'. (Hyprland has no per-window
+    splith/tabbed/stacking like i3.)"""
+    return hyprcontrol.layout_message(message)
 
 
 @mcp.tool()
-def run_i3(command: str) -> str:
-    """Escape hatch: run a raw i3 command over IPC (e.g. 'resize set 800 600',
-    'move left', 'fullscreen toggle'). `exit` is blocked; there's no shell unless
-    the command itself is an `exec`."""
-    return i3control.run_i3(command)
+def run_dispatch(dsp_expr: str) -> str:
+    """Escape hatch: run a raw Hyprland dispatcher as the Lua expression passed to
+    hl.dispatch(...), e.g. 'hl.dsp.window.fullscreen({})' or 'hl.dsp.window.move({ direction = "l" })'.
+    `exit` is blocked."""
+    return hyprcontrol.run_dispatch(dsp_expr)
 
 
 # --- entry point ------------------------------------------------------------
 
 def selftest() -> int:
-    """Read-only smoke test: i3 tree + outputs + one capture + mouse query. No clicks."""
-    print(f"DISPLAY={os.environ.get('DISPLAY')!r}")
-    outs = i3tree.get_outputs()
+    """Read-only smoke test: hypr tree + outputs + one capture + mouse query. No clicks."""
+    print(f"WAYLAND_DISPLAY={os.environ.get('WAYLAND_DISPLAY')!r}")
+    outs = hyprtree.get_outputs()
     print(f"outputs: {[o['name'] for o in outs]}")
-    wins = i3tree.list_windows()
+    wins = hyprtree.list_windows()
     print(f"windows: {len(wins)} (focused: {[w['title'] for w in wins if w['focused']]})")
-    prim = i3tree.primary_output(outs)
+    prim = hyprtree.primary_output(outs)
     if prim:
         r = prim["rect"]
         shot = capture.capture_region(r["x"], r["y"], r["w"], r["h"], f"output {prim['name']}")

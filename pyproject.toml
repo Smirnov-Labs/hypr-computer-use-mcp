@@ -1,15 +1,13 @@
 [project]
 name = "hypr-cua-mcp"
 version = "0.1.0"
-description = "i3-aware computer-use MCP server for X11 — screenshot + click/type via xdotool with i3-tree targeting"
+description = "Hyprland/Wayland computer-use MCP server — screenshot (grim) + click/type (uinput) with hyprctl-tree targeting"
 readme = "README.md"
 license = "MIT"
 requires-python = ">=3.11"
 dependencies = [
     "mcp>=2.0,<3",
-    "i3ipc>=2.2",
     "pillow>=10",
-    "python-xlib>=0.33",
     "evdev>=1.9.3",
 ]
 
