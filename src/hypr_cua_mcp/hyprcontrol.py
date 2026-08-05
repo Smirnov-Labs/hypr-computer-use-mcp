@@ -12,6 +12,7 @@ auditable — including focus_window, which is a dispatch here.
 from __future__ import annotations
 
 import subprocess
+import time
 
 from . import hyprtree
 
@@ -69,11 +70,22 @@ def goto_workspace(workspace) -> str:
 def focus_window(con_id: str) -> bool:
     """Focus a window by address, then VERIFY focus landed — the guard that keeps
     keystrokes from going to the wrong window. Returns False if the window is gone
-    or focus didn't land."""
+    or focus didn't land.
+
+    CAVEAT: under Hyprland `follow_mouse=1` (the default) keyboard focus tracks the
+    pointer, so a dispatch-focus can be reverted by the cursor's position. The
+    reliable way to focus a window for typing is to CLICK it via screenshot
+    coordinates (the natural computer-use flow) — prefer click-then-type over
+    type_text(con_id=...) when this returns False.
+    """
     if hyprtree.find_window(con_id) is None:
         return False
     _dispatch(f"hl.dsp.focus({{ window = {_addr(con_id)} }})")
-    return hyprtree.get_focused_address() == con_id
+    for _ in range(3):  # allow the focus event to settle before verifying
+        if hyprtree.get_focused_address() == con_id:
+            return True
+        time.sleep(0.05)
+    return False
 
 
 def move_window_to_workspace(con_id: str, workspace) -> str:
