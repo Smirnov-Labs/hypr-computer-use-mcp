@@ -34,25 +34,6 @@ jobs:
         #   · workflow: publish.yml · environment: pypi
         # (Preferred over an API token: nothing secret lives in the repo or CI.)
 
-  # --- Optional: also list it in the MCP registry --------------------------------
-  # Enable once you've confirmed the current mcp-publisher install method
-  # (https://github.com/modelcontextprotocol/registry — "Publishing" docs). It
-  # authenticates to the io.github.Smirnov-Labs/* namespace via GitHub OIDC, so no
-  # secret is needed; it just needs `id-token: write` and the server.json above.
-  #
-  # mcp-registry:
-  #   name: MCP Registry
-  #   needs: pypi
-  #   runs-on: ubuntu-latest
-  #   permissions:
-  #     id-token: write
-  #   steps:
-  #     - uses: actions/checkout@v4
-  #     - name: Install mcp-publisher
-  #       run: |
-  #         curl -fsSL "$(curl -s https://api.github.com/repos/modelcontextprotocol/registry/releases/latest \
-  #           | grep -o 'https://[^"]*mcp-publisher[^"]*linux_amd64.tar.gz')" | tar -xz mcp-publisher
-  #     - name: Publish server.json
-  #       run: |
-  #         ./mcp-publisher login github-oidc
-  #         ./mcp-publisher publish
+  # The MCP registry listing is a separate workflow — .github/workflows/publish-mcp.yml
+  # (OIDC as the repo → the io.github.Smirnov-Labs namespace). Run it after a release;
+  # keeping it separate means re-running it never re-triggers a PyPI upload.

@@ -1,0 +1,35 @@
+name: Publish to MCP Registry
+
+# Lists server.json in the MCP registry (https://registry.modelcontextprotocol.io).
+# Run it after a PyPI release: Actions tab → this workflow → "Run workflow", or
+#   gh workflow run publish-mcp.yml
+# Auth is GitHub OIDC *as the repository* — which the Smirnov-Labs org owns — so it can
+# publish the io.github.Smirnov-Labs/* namespace with no token and without anyone making
+# their org membership public. Kept separate from publish.yml so re-running it never
+# re-triggers a PyPI upload (which would fail on an already-published version).
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  publish:
+    name: mcp-publisher
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write        # GitHub OIDC → proves the repo/org, grants io.github.Smirnov-Labs/*
+      contents: read         # job-level permissions REPLACE the top-level default, so checkout needs this too
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install mcp-publisher
+        run: |
+          curl -fsSL https://github.com/modelcontextprotocol/registry/releases/download/v1.8.1/mcp-publisher_linux_amd64.tar.gz | tar -xz mcp-publisher
+          chmod +x mcp-publisher
+      - name: Validate server.json
+        run: ./mcp-publisher validate server.json
+      - name: Log in via GitHub OIDC
+        run: ./mcp-publisher login github-oidc
+      - name: Publish to the registry
+        run: ./mcp-publisher publish
