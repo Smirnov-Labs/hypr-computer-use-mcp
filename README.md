@@ -57,6 +57,14 @@ axes via the layout extent read from `hyprctl monitors` (verified ~1px).
 
 ## Register with Claude Code
 
+Once it's on PyPI, no clone needed:
+
+```bash
+claude mcp add hypr-cua -- uvx hypr-cua-mcp
+```
+
+Or from a local checkout:
+
 ```bash
 claude mcp add hypr-cua -- /path/to/hypr-computer-use-mcp/bin/hypr-cua-mcp
 ```
@@ -113,6 +121,13 @@ what to install instead of failing on a cryptic traceback.
   raises rather than typing into an unverified window.
 - Input is real uinput, so it resets the compositor idle timer naturally (no
   synthetic-input self-lock, unlike X11). See [`docs/gotchas.md`](./docs/gotchas.md).
+
+## Registry
+
+On PyPI as [`hypr-cua-mcp`](https://pypi.org/project/hypr-cua-mcp/) and in the MCP
+registry as `io.github.Smirnov-Labs/hypr-cua-mcp` (manifest: [`server.json`](./server.json)).
+
+mcp-name: io.github.Smirnov-Labs/hypr-cua-mcp
 
 ## License
 

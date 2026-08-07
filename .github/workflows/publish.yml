@@ -1,0 +1,57 @@
+name: Publish
+
+# Publish to PyPI on a GitHub Release. Before tagging, bump `version` in BOTH
+# pyproject.toml and server.json to match the release tag (e.g. v0.2.0 -> 0.2.0).
+
+on:
+  release:
+    types: [published]
+
+permissions:
+  contents: read
+
+jobs:
+  pypi:
+    name: PyPI (Trusted Publishing)
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi
+      url: https://pypi.org/p/hypr-cua-mcp
+    permissions:
+      id-token: write        # OIDC token for PyPI Trusted Publishing — no API-token secret to store or leak
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+      - name: Build sdist + wheel
+        run: uv build
+      - name: Upload to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
+        # One-time setup on PyPI → Manage → Publishing → add a Trusted Publisher:
+        #   project: hypr-cua-mcp · owner: Smirnov-Labs · repo: hypr-computer-use-mcp
+        #   · workflow: publish.yml · environment: pypi
+        # (Preferred over an API token: nothing secret lives in the repo or CI.)
+
+  # --- Optional: also list it in the MCP registry --------------------------------
+  # Enable once you've confirmed the current mcp-publisher install method
+  # (https://github.com/modelcontextprotocol/registry — "Publishing" docs). It
+  # authenticates to the io.github.Smirnov-Labs/* namespace via GitHub OIDC, so no
+  # secret is needed; it just needs `id-token: write` and the server.json above.
+  #
+  # mcp-registry:
+  #   name: MCP Registry
+  #   needs: pypi
+  #   runs-on: ubuntu-latest
+  #   permissions:
+  #     id-token: write
+  #   steps:
+  #     - uses: actions/checkout@v4
+  #     - name: Install mcp-publisher
+  #       run: |
+  #         curl -fsSL "$(curl -s https://api.github.com/repos/modelcontextprotocol/registry/releases/latest \
+  #           | grep -o 'https://[^"]*mcp-publisher[^"]*linux_amd64.tar.gz')" | tar -xz mcp-publisher
+  #     - name: Publish server.json
+  #       run: |
+  #         ./mcp-publisher login github-oidc
+  #         ./mcp-publisher publish
