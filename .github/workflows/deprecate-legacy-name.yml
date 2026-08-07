@@ -27,6 +27,6 @@ jobs:
         run: ./mcp-publisher login github-oidc
       - name: Deprecate io.github.Smirnov-Labs/hypr-cua-mcp
         run: |
-          ./mcp-publisher status --status deprecated --all-versions \
+          echo y | ./mcp-publisher status --status deprecated --all-versions \
             --message "Re-homed to com.smirnovlabs/hypr-cua-mcp" \
             io.github.Smirnov-Labs/hypr-cua-mcp
