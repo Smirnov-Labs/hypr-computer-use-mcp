@@ -47,6 +47,49 @@ def _dispatch(dsp_expr: str) -> str:
     return _eval(f"hl.dispatch({dsp_expr})")
 
 
+def _cursorpos() -> tuple[int, int] | None:
+    """Current global pointer (x, y) via `hyprctl cursorpos`, or None if unreadable.
+
+    Read directly (a query, not a dispatch) so it works mid-focus; any failure
+    returns None so a focus op degrades to "focus without restoring the cursor"
+    rather than erroring.
+    """
+    try:
+        out = subprocess.run(
+            ["hyprctl", "cursorpos"],
+            capture_output=True, text=True, timeout=CMD_TIMEOUT,
+        )
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        return None
+    if out.returncode != 0:
+        return None
+    x, _, y = out.stdout.strip().partition(",")
+    try:
+        return int(x.strip()), int(y.strip())
+    except ValueError:
+        return None
+
+
+def _focus_keeping_cursor(focus_expr: str) -> None:
+    """Run a focus dispatch, then restore the pointer to where it was.
+
+    Hyprland warps the cursor to the newly-focused window/output on every focus
+    (`cursor:no_warps` defaults false), so a background agent's focus_window /
+    goto_workspace would otherwise yank the user's REAL, shared cursor — the
+    "screenshot jumped my mouse to 0,0" symptom (the warp lands on a monitor's
+    origin when the focused workspace has no window to center on).
+
+    We warp it back with `hl.dsp.cursor.move` — a SYNTHETIC warp that, unlike a
+    real uinput motion, does NOT re-trigger follow_mouse (verified on the live
+    compositor), so keyboard focus still lands on and stays on the target. If the
+    pointer can't be read we focus without restoring rather than fail.
+    """
+    before = _cursorpos()
+    _dispatch(focus_expr)
+    if before is not None:
+        _dispatch(f"hl.dsp.cursor.move({{ x = {before[0]}, y = {before[1]} }})")
+
+
 def _lua_str(s: str) -> str:
     """Quote a Python str as a Lua string literal (double-quoted, escaped)."""
     body = (
@@ -67,8 +110,12 @@ def _addr(con_id: str) -> str:
 
 
 def goto_workspace(workspace) -> str:
-    """Switch the focused monitor to a workspace (created if absent)."""
-    _dispatch(f"hl.dsp.focus({{ workspace = {_ws_field(workspace)} }})")
+    """Switch the focused monitor to a workspace (created if absent).
+
+    Restores the pointer afterwards so switching workspaces from a background agent
+    doesn't warp the user's shared cursor (see _focus_keeping_cursor).
+    """
+    _focus_keeping_cursor(f"hl.dsp.focus({{ workspace = {_ws_field(workspace)} }})")
     return f"switched to workspace {workspace}"
 
 
@@ -85,7 +132,10 @@ def focus_window(con_id: str) -> bool:
     """
     if hyprtree.find_window(con_id) is None:
         return False
-    _dispatch(f"hl.dsp.focus({{ window = {_addr(con_id)} }})")
+    # Focus, then restore the cursor (the synthetic warp doesn't disturb the focus
+    # we just set — see _focus_keeping_cursor) BEFORE verifying, so the verdict
+    # reflects the final state the user is left in.
+    _focus_keeping_cursor(f"hl.dsp.focus({{ window = {_addr(con_id)} }})")
     for _ in range(3):  # allow the focus event to settle before verifying
         if hyprtree.get_focused_address() == con_id:
             return True

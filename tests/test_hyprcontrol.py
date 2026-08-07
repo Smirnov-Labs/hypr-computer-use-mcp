@@ -9,6 +9,9 @@ from hypr_cua_mcp import hyprcontrol, hyprtree
 def _cap_dispatch(monkeypatch):
     calls = []
     monkeypatch.setattr(hyprcontrol, "_dispatch", lambda expr: calls.append(expr) or "ok")
+    # Default: pointer unreadable -> focus ops skip the cursor restore, so tests that
+    # only care about the focus expr stay hermetic. Save/restore tests override this.
+    monkeypatch.setattr(hyprcontrol, "_cursorpos", lambda: None, raising=False)
     return calls
 
 
@@ -99,6 +102,84 @@ def test_ws_field_non_ascii_digit_is_quoted(monkeypatch):
     calls = _cap_dispatch(monkeypatch)
     hyprcontrol.goto_workspace("²")  # superscript-2: isdigit() True but not a Lua numeral
     assert calls == ['hl.dsp.focus({ workspace = "²" })']
+
+
+def test_cursorpos_parses_hyprctl_output(monkeypatch):
+    class R:
+        returncode = 0
+        stdout = "2872, 611\n"
+        stderr = ""
+
+    monkeypatch.setattr(subprocess, "run", lambda *a, **k: R())
+    assert hyprcontrol._cursorpos() == (2872, 611)
+
+
+def test_cursorpos_none_when_unreadable(monkeypatch):
+    class R:
+        returncode = 1
+        stdout = ""
+        stderr = "boom"
+
+    monkeypatch.setattr(subprocess, "run", lambda *a, **k: R())
+    assert hyprcontrol._cursorpos() is None
+
+
+def test_goto_workspace_restores_cursor_after_focus(monkeypatch):
+    # A background agent's goto_workspace must not yank the user's shared cursor:
+    # Hyprland warps it on the focus (cursor:no_warps=false), so we warp it back.
+    calls = _cap_dispatch(monkeypatch)
+    monkeypatch.setattr(hyprcontrol, "_cursorpos", lambda: (2872, 611))
+    hyprcontrol.goto_workspace(5)
+    assert calls == [
+        "hl.dsp.focus({ workspace = 5 })",
+        "hl.dsp.cursor.move({ x = 2872, y = 611 })",
+    ]
+
+
+def test_goto_workspace_still_focuses_when_cursor_unreadable(monkeypatch):
+    calls = _cap_dispatch(monkeypatch)  # _cursorpos -> None by default
+    hyprcontrol.goto_workspace(5)
+    assert calls == ["hl.dsp.focus({ workspace = 5 })"]  # focus happens, no restore
+
+
+def test_focus_window_restores_cursor_and_still_reports_landing(monkeypatch):
+    # The synthetic cursor.move restore does NOT re-trigger follow_mouse (verified on
+    # the live compositor), so focus still lands on the target and stays there.
+    calls = _cap_dispatch(monkeypatch)
+    monkeypatch.setattr(hyprcontrol, "_cursorpos", lambda: (100, 200))
+    monkeypatch.setattr(hyprtree, "find_window", lambda a: {"id": a})
+    monkeypatch.setattr(hyprtree, "get_focused_address", lambda: "0xaaa")
+    assert hyprcontrol.focus_window("0xaaa") is True
+    assert calls == [
+        'hl.dsp.focus({ window = "address:0xaaa" })',
+        "hl.dsp.cursor.move({ x = 100, y = 200 })",
+    ]
+
+
+def test_focus_window_restores_cursor_before_verifying_focus(monkeypatch):
+    # Restore must happen BEFORE focus is verified, so the verdict reflects the final
+    # state (cursor back where the user had it) rather than the mid-dispatch state.
+    order = []
+    monkeypatch.setattr(hyprcontrol, "_dispatch",
+                        lambda expr: order.append(("dispatch", expr)) or "ok")
+    monkeypatch.setattr(hyprcontrol, "_cursorpos", lambda: (1, 2))
+    monkeypatch.setattr(hyprtree, "find_window", lambda a: {"id": a})
+    monkeypatch.setattr(hyprtree, "get_focused_address",
+                        lambda: order.append(("verify", None)) or "0xaaa")
+    hyprcontrol.focus_window("0xaaa")
+    assert order == [
+        ("dispatch", 'hl.dsp.focus({ window = "address:0xaaa" })'),
+        ("dispatch", "hl.dsp.cursor.move({ x = 1, y = 2 })"),
+        ("verify", None),
+    ]
+
+
+def test_focus_window_missing_skips_focus_and_restore(monkeypatch):
+    calls = _cap_dispatch(monkeypatch)
+    monkeypatch.setattr(hyprcontrol, "_cursorpos", lambda: (1, 2))
+    monkeypatch.setattr(hyprtree, "find_window", lambda a: None)
+    assert hyprcontrol.focus_window("0xgone") is False
+    assert calls == []  # no focus dispatch, no cursor.move, no needless warp
 
 
 def test_eval_raises_on_error_line(monkeypatch):
