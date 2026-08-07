@@ -1,12 +1,13 @@
 name: Publish to MCP Registry
 
-# Lists server.json in the MCP registry (https://registry.modelcontextprotocol.io).
-# Run it after a PyPI release: Actions tab → this workflow → "Run workflow", or
+# Lists server.json (com.smirnovlabs/hypr-cua-mcp) in the MCP registry.
+# The com.smirnovlabs namespace is verified by a DNS TXT record on smirnovlabs.com,
+# so registry auth uses the Ed25519 signing key (NOT GitHub OIDC). To run this in CI,
+# add a repo secret MCP_DNS_PRIVATE_KEY = the key hex (from the local key stored at
+# ~/.config/mcp/smirnovlabs-ed25519.key). Then, after a PyPI release:
 #   gh workflow run publish-mcp.yml
-# Auth is GitHub OIDC *as the repository* — which the Smirnov-Labs org owns — so it can
-# publish the io.github.Smirnov-Labs/* namespace with no token and without anyone making
-# their org membership public. Kept separate from publish.yml so re-running it never
-# re-triggers a PyPI upload (which would fail on an already-published version).
+# Or publish locally with no secret at all:
+#   mcp-publisher login dns --domain smirnovlabs.com --private-key <hex> && mcp-publisher publish
 
 on:
   workflow_dispatch:
@@ -16,11 +17,8 @@ permissions:
 
 jobs:
   publish:
-    name: mcp-publisher
+    name: mcp-publisher (DNS auth)
     runs-on: ubuntu-latest
-    permissions:
-      id-token: write        # GitHub OIDC → proves the repo/org, grants io.github.Smirnov-Labs/*
-      contents: read         # job-level permissions REPLACE the top-level default, so checkout needs this too
     steps:
       - uses: actions/checkout@v7
       - name: Install mcp-publisher
@@ -29,7 +27,7 @@ jobs:
           chmod +x mcp-publisher
       - name: Validate server.json
         run: ./mcp-publisher validate server.json
-      - name: Log in via GitHub OIDC
-        run: ./mcp-publisher login github-oidc
+      - name: Log in via DNS
+        run: ./mcp-publisher login dns --domain smirnovlabs.com --private-key "${{ secrets.MCP_DNS_PRIVATE_KEY }}"
       - name: Publish to the registry
         run: ./mcp-publisher publish

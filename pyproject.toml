@@ -1,6 +1,6 @@
 [project]
 name = "hypr-cua-mcp"
-version = "0.1.0"
+version = "0.1.1"
 description = "Hyprland/Wayland computer-use MCP server — screenshot (grim) + click/type (uinput) with hyprctl-tree targeting"
 readme = "README.md"
 license = "MIT"

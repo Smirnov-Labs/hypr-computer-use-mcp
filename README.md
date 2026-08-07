@@ -125,9 +125,9 @@ what to install instead of failing on a cryptic traceback.
 ## Registry
 
 On PyPI as [`hypr-cua-mcp`](https://pypi.org/project/hypr-cua-mcp/) and in the MCP
-registry as `io.github.Smirnov-Labs/hypr-cua-mcp` (manifest: [`server.json`](./server.json)).
+registry as `com.smirnovlabs/hypr-cua-mcp` (manifest: [`server.json`](./server.json)).
 
-mcp-name: io.github.Smirnov-Labs/hypr-cua-mcp
+mcp-name: com.smirnovlabs/hypr-cua-mcp
 
 ## License
 
