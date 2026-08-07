@@ -1,0 +1,32 @@
+name: Deprecate legacy registry name
+
+# One-shot: retire the old io.github.Smirnov-Labs/hypr-cua-mcp registry entry after
+# re-homing to com.smirnovlabs/hypr-cua-mcp. Auth is GitHub OIDC *as the repo*, which
+# grants the io.github.Smirnov-Labs namespace (DNS auth only covers com.smirnovlabs).
+# Safe to delete this workflow once it has run.
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  deprecate:
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write        # GitHub OIDC → io.github.Smirnov-Labs/*
+      contents: read
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install mcp-publisher
+        run: |
+          curl -fsSL https://github.com/modelcontextprotocol/registry/releases/download/v1.8.1/mcp-publisher_linux_amd64.tar.gz | tar -xz mcp-publisher
+          chmod +x mcp-publisher
+      - name: Log in via GitHub OIDC
+        run: ./mcp-publisher login github-oidc
+      - name: Deprecate io.github.Smirnov-Labs/hypr-cua-mcp
+        run: |
+          ./mcp-publisher status --status deprecated --all-versions \
+            --message "Re-homed to com.smirnovlabs/hypr-cua-mcp" \
+            io.github.Smirnov-Labs/hypr-cua-mcp
