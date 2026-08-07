@@ -58,7 +58,7 @@ axes via the layout extent read from `hyprctl monitors` (verified ~1px).
 ## Register with Claude Code
 
 ```bash
-claude mcp add hypr-cua -- /home/vania/Projects/1.Personal/hypr-computer-use-mcp/bin/hypr-cua-mcp
+claude mcp add hypr-cua -- /path/to/hypr-computer-use-mcp/bin/hypr-cua-mcp
 ```
 
 Reconnect Claude Code (`/mcp` → reconnect) or restart it to pick up the server.
@@ -69,13 +69,36 @@ clicks) with:
 uv run hypr-cua-mcp --selftest
 ```
 
-## Requirements
+## Install the dependencies
 
-System: `grim` (capture), `wl-clipboard` (`wl-copy`/`wl-paste`), and a running
-**Hyprland** (`hyprctl`). Input uses a self-owned **uinput** device — the process
-needs read-write on `/dev/uinput`, which on most setups an `uaccess`/udev ACL
-already grants the logged-in user (no root, no `ydotoold`). Python deps (`mcp`,
-`pillow`, `evdev`) are managed by `uv`.
+The server shells out to a handful of CLI tools. `screenshot` needs `grim`, the
+clipboard tools need `wl-clipboard`, and everything reads/drives Hyprland through
+`hyprctl`; `tmux` and a Chromium/Chrome are only needed for the optional terminal
+and browser channels.
+
+| Tool | Needed for | Arch | Debian/Ubuntu |
+|------|-----------|------|---------------|
+| `hyprctl` | tree + control (**required**) | bundled with `hyprland` | bundled with `hyprland` |
+| `grim` | `screenshot` / `screenshot_window` (**required**) | `pacman -S grim` | `apt install grim` |
+| `wl-clipboard` | `read_clipboard` / `write_clipboard` | `pacman -S wl-clipboard` | `apt install wl-clipboard` |
+| `uv` | runs the server + syncs Python deps | `pacman -S uv` | see [astral.sh/uv](https://docs.astral.sh/uv/) |
+| `tmux` | `tmux_*` / `task_*` tools (optional) | `pacman -S tmux` | `apt install tmux` |
+| Chromium / Chrome | `cdp_*` browser tools (optional) | `pacman -S chromium` | `apt install chromium` |
+
+Arch, in one go (Hyprland assumed already installed):
+
+```bash
+sudo pacman -S grim wl-clipboard uv tmux chromium
+```
+
+Input uses a self-owned **uinput** device, so the process needs read-write on
+`/dev/uinput` — on most setups a `uaccess`/udev ACL already grants that to the
+logged-in user (no root, no `ydotoold`). The Python deps (`mcp`, `pillow`,
+`evdev`, `websocket-client`) are synced by `uv` on first launch.
+
+Miss one and the matching tool says so: calling `screenshot` without `grim`
+returns *"grim not found; install it …"* straight to the model, so it can tell you
+what to install instead of failing on a cryptic traceback.
 
 ## Safety
 

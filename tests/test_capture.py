@@ -1,9 +1,20 @@
 """Tests for capture geometry: crop-box validation, scale budget, frame build."""
+import subprocess
+
 import pytest
 from PIL import Image as PILImage
 
 from hypr_cua_mcp import capture
 from hypr_cua_mcp.capture import CaptureError, _crop_box, _fit_scale, capture_region
+
+
+def test_grab_root_hints_how_to_install_when_grim_missing(monkeypatch):
+    def _no_grim(*a, **k):
+        raise FileNotFoundError(2, "No such file or directory", "grim")
+
+    monkeypatch.setattr(subprocess, "run", _no_grim)
+    with pytest.raises(RuntimeError, match=r"grim not found.*install"):
+        capture._grab_root()
 
 
 def test_crop_box_clamps_to_framebuffer():

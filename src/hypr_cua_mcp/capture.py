@@ -41,12 +41,20 @@ def _grab_root() -> PILImage.Image:
     the layout bounding box, with the image origin at global (0,0). That lets us
     crop by global coordinates exactly as the X11 root-grab did.
     """
-    proc = subprocess.run(
-        ["grim", "-t", "png", "-"],
-        capture_output=True,
-        check=True,
-        timeout=GRAB_TIMEOUT,
-    )
+    try:
+        proc = subprocess.run(
+            ["grim", "-t", "png", "-"],
+            capture_output=True,
+            check=True,
+            timeout=GRAB_TIMEOUT,
+        )
+    except FileNotFoundError:
+        # Surface an actionable hint (the MCP client shows this to the model) rather
+        # than a bare FileNotFoundError, so a missing dependency is self-explaining.
+        raise RuntimeError(
+            "grim not found; install it to take screenshots "
+            "(e.g. `pacman -S grim` or `apt install grim`)"
+        )
     return PILImage.open(io.BytesIO(proc.stdout)).convert("RGB")
 
 
