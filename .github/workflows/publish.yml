@@ -1,7 +1,8 @@
 name: Publish
 
-# Publish to PyPI on a GitHub Release. Before tagging, bump `version` in BOTH
-# pyproject.toml and server.json to match the release tag (e.g. v0.2.0 -> 0.2.0).
+# Publish to PyPI on a GitHub Release. Before tagging, bump `version` in
+# pyproject.toml and in BOTH version fields of server.json to match the release tag
+# (e.g. v0.2.0 -> 0.2.0), then `uv lock`. Full checklist: AGENTS.md → Releasing.
 
 on:
   release:
@@ -35,5 +36,5 @@ jobs:
         # (Preferred over an API token: nothing secret lives in the repo or CI.)
 
   # The MCP registry listing is a separate workflow — .github/workflows/publish-mcp.yml
-  # (OIDC as the repo → the io.github.Smirnov-Labs namespace). Run it after a release;
-  # keeping it separate means re-running it never re-triggers a PyPI upload.
+  # (DNS auth for the com.smirnovlabs namespace). Run it after a release; keeping it
+  # separate means re-running it never re-triggers a PyPI upload.

@@ -4,13 +4,38 @@ version = "0.1.1"
 description = "Hyprland/Wayland computer-use MCP server — screenshot (grim) + click/type (uinput) with hyprctl-tree targeting"
 readme = "README.md"
 license = "MIT"
+authors = [{ name = "Ivan Smirnov" }]
 requires-python = ">=3.11"
+keywords = [
+    "mcp", "mcp-server", "model-context-protocol", "computer-use",
+    "hyprland", "wayland", "uinput", "grim", "desktop-automation",
+    "claude", "llm", "ai-agents",
+]
+classifiers = [
+    "Development Status :: 5 - Production/Stable",
+    "Intended Audience :: Developers",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Topic :: Desktop Environment :: Window Managers",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
 dependencies = [
     "mcp>=2.0,<3",
     "pillow>=10",
     "evdev>=1.9.3",
     "websocket-client>=1.9.0",
 ]
+
+[project.urls]
+Homepage = "https://github.com/Smirnov-Labs/hypr-computer-use-mcp"
+Repository = "https://github.com/Smirnov-Labs/hypr-computer-use-mcp"
+Issues = "https://github.com/Smirnov-Labs/hypr-computer-use-mcp/issues"
+Changelog = "https://github.com/Smirnov-Labs/hypr-computer-use-mcp/releases"
 
 [project.scripts]
 hypr-cua-mcp = "hypr_cua_mcp.server:main"
