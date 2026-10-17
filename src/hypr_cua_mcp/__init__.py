@@ -1,3 +1,5 @@
 """Hyprland/Wayland computer-use MCP server."""
 
-__version__ = "0.1.0"
+from importlib.metadata import version
+
+__version__ = version("hypr-cua-mcp")  # single source of truth: pyproject.toml

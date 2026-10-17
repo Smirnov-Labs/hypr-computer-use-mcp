@@ -24,9 +24,9 @@ import sys
 
 from mcp.server.mcpserver import MCPServer, Image
 
-from . import capture, cdp, clipboard, coords, hyprcontrol, hyprtree, inputs, taskrunner, tmux
+from . import __version__, capture, cdp, clipboard, coords, hyprcontrol, hyprtree, inputs, taskrunner, tmux
 
-mcp = MCPServer("hypr-cua", version="0.1.0")
+mcp = MCPServer("hypr-cua", version=__version__)
 
 
 def _shot_response(shot: capture.Shot):

@@ -1,12 +1,12 @@
 # Gotchas & environment notes
 
-Hard-won lessons from building and verifying this on hexane (Arch, Hyprland
-0.56.1, Wayland, multi-output). Most cost real debugging time.
+Hard-won lessons from building and verifying this on Arch with Hyprland 0.56.1
+(Lua config) across three monitors. Most cost real debugging time.
 
 ## `hyprctl dispatch` is Lua-wrapped (the big one)
 
-This machine configures Hyprland in **Lua** (`~/.dotfiles/hypr/hyprland.lua`), so
-a plain `hyprctl dispatch movecursor 300 300` is parsed as Lua and fails:
+Since 0.55, Hyprland can be configured in **Lua** (`hyprland.lua`). With a Lua
+config, a plain `hyprctl dispatch movecursor 300 300` is parsed as Lua and fails:
 
 ```
 error: return hl.dispatch(movecursor 300 300)  -- ')' expected near '300'
@@ -47,8 +47,9 @@ and won't move the cursor). Findings:
 - **~1s settle:** after creating the device, wait ~1s for the compositor to bind
   it before the first event, or the first move is dropped. The MCP server creates
   it once at first use and keeps it.
-- **Rootless:** `/dev/uinput` is usually `crw-rw----+` with a `uaccess` ACL
-  granting the logged-in user rw — so no root and no `ydotoold` daemon.
+- **Rootless:** with a `uaccess` udev rule, `/dev/uinput` is `crw-rw----+` and the
+  logged-in user gets rw — so no root and no `ydotoold` daemon. Not every distro
+  ships that rule by default; the README has a one-liner that adds it.
 - **Real input resets idle:** uinput events are genuine input, so they reset the
   compositor idle timer — none of the X11 synthetic-input self-lock problem, hence
   `inputs.reset_idle()` is a no-op.
