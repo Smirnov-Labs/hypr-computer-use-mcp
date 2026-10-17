@@ -18,7 +18,7 @@ permissions:
 jobs:
   publish:
     name: mcp-publisher (DNS auth)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     steps:
       - uses: actions/checkout@v7
       - name: Install mcp-publisher
