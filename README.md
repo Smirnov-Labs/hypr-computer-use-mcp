@@ -19,7 +19,7 @@ was just shown*; the server maps them back to global layout pixels.
 
 Built for **Wayland/Hyprland**: `grim` (capture) + a self-owned **uinput** device
 (input) + `hyprctl` (tree/control) + `wl-clipboard`. It is the Wayland successor
-to [i3-computer-use-mcp](https://github.com/issmirnov/i3-computer-use-mcp) (X11).
+to [i3-computer-use-mcp](https://github.com/Smirnov-Labs/i3-computer-use-mcp) (X11).
 
 ## Tools
 
