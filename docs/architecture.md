@@ -4,7 +4,7 @@
 **drive** a Hyprland/Wayland desktop. The novel part isn't any single primitive
 (grim, uinput, hyprctl all exist) — it's wiring them so pointer coordinates are
 always expressed in the image the model was just shown. It is a fork of
-[`i3-computer-use-mcp`](https://github.com/issmirnov/i3-computer-use-mcp) with the
+[`i3-computer-use-mcp`](https://github.com/Smirnov-Labs/i3-computer-use-mcp) with the
 X11 backends swapped for Wayland ones; `coords.py`,
 `server.py`, and the frame-id contract carry over nearly unchanged.
 
