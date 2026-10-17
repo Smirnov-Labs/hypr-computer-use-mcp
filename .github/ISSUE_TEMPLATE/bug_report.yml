@@ -1,0 +1,48 @@
+name: Bug report
+description: Something doesn't work as documented
+labels: [bug]
+body:
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: What you did, what you expected, and what happened instead. Include the tool call and the error it returned, if any.
+    validations:
+      required: true
+  - type: input
+    id: hyprland-version
+    attributes:
+      label: Hyprland version
+      description: First line of `hyprctl version`.
+    validations:
+      required: true
+  - type: dropdown
+    id: config-type
+    attributes:
+      label: Config type
+      options:
+        - hyprland.lua (Lua)
+        - hyprland.conf (hyprlang)
+    validations:
+      required: true
+  - type: input
+    id: monitors
+    attributes:
+      label: Monitors
+      description: Count, resolution and scale of each, e.g. "2× 3840x2160 @ scale 1.5".
+  - type: input
+    id: client
+    attributes:
+      label: MCP client
+      description: e.g. Claude Code, Cursor, Codex CLI — with its version if you know it.
+  - type: input
+    id: server-version
+    attributes:
+      label: hypr-cua-mcp version
+      description: e.g. 0.1.2, or a commit hash if you run from a checkout.
+  - type: textarea
+    id: selftest
+    attributes:
+      label: Selftest output
+      description: Output of `uvx hypr-cua-mcp --selftest` (read-only, no clicks). It prints your focused window's title — redact anything private.
+      render: text
