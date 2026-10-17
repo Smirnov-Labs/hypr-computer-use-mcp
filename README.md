@@ -43,11 +43,11 @@ Window ids are **Hyprland addresses** (`0x…`) from `list_windows` — not inte
 | `type_text(text, con_id?) / key(keys, con_id?)` | Keyboard input; with a `con_id`, focus that window first and refuse to type if focus doesn't land |
 | `read_clipboard(selection?)` / `write_clipboard(text, selection?, secret?)` | Exact text in/out of the `clipboard`/`primary` selection (no OCR); `write` returns only a length, never the value |
 
-**Control Hyprland** (needs a Lua config — see [Requirements](#requirements))
+**Control Hyprland** (needs a Lua config, see [Requirements](#requirements))
 
 | Tool | What it does |
 |------|--------------|
-| `focus_window(con_id)` | Focus a window by address (best-effort — see the follow_mouse caveat under [Safety](#safety)) |
+| `focus_window(con_id)` | Focus a window by address (best-effort; see the follow_mouse caveat under [Safety](#safety)) |
 | `launch(command)` | Launch an app via Hyprland's exec dispatcher |
 | `goto_workspace(ws)` / `move_window_to_workspace(con_id, ws)` | Switch to / move a window (by address) to a workspace |
 | `set_floating(con_id, enable?)` | Toggle a window's floating state |
@@ -58,9 +58,9 @@ Window ids are **Hyprland addresses** (`0x…`) from `list_windows` — not inte
 
 | Tool | What it does |
 |------|--------------|
-| `tmux_list / tmux_new / tmux_run / tmux_keys / tmux_read / tmux_kill` | Drive terminals in detached tmux sessions on an isolated `hypr-cua` socket — your own tmux sessions are never touched |
+| `tmux_list / tmux_new / tmux_run / tmux_keys / tmux_read / tmux_kill` | Drive terminals in detached tmux sessions on an isolated `hypr-cua` socket; it never touches your own tmux sessions |
 | `task_start / task_status / task_list / task_send / task_stop` | Run a command as a background task and poll it (`running` → `done` + exit code); answer prompts with `task_send` |
-| `cdp_targets / cdp_open / cdp_navigate / cdp_read / cdp_eval / cdp_click / cdp_type / cdp_close` | Drive tabs in a dedicated Chrome over the DevTools protocol — never your main profile (see [Browser channel](#browser-channel)) |
+| `cdp_targets / cdp_open / cdp_navigate / cdp_read / cdp_eval / cdp_click / cdp_type / cdp_close` | Drive tabs in a dedicated Chrome over the DevTools protocol, never your main profile (see [Browser channel](#browser-channel)) |
 
 ## The coordinate model (the important bit)
 
@@ -86,11 +86,12 @@ axes via the layout extent read from `hyprctl monitors` (verified ~1px).
 - **Hyprland on Wayland.** Developed and tested on Hyprland 0.56 across three
   monitors at scale 1.
 - **A Lua config (`hyprland.lua`, Hyprland 0.55+) for the window-control tools.**
+  These tools go through `hyprctl eval` and Hyprland's Lua `hl.dispatch` API:
   `focus_window`, `launch`, `goto_workspace`, `move_window_to_workspace`,
-  `set_floating`, `layout_message` and `run_dispatch` — plus `type_text`/`key` with
-  a `con_id` and `move_mouse(follow=True)` — go through `hyprctl eval` and
-  Hyprland's Lua `hl.dispatch` API. Screenshots, pointer and keyboard input, the
-  window tree, the clipboard, and the tmux/task/browser channels work with any config.
+  `set_floating`, `layout_message`, `run_dispatch`, plus `type_text`/`key` with a
+  `con_id` and `move_mouse(follow=True)`. Everything else works with any config:
+  screenshots, pointer and keyboard input, the window tree, the clipboard, and the
+  tmux/task/browser channels.
 - **Read-write access to `/dev/uinput`** for mouse and keyboard input (see below).
 - **Python 3.11+** and [`uv`](https://docs.astral.sh/uv/).
 - It runs **inside your Hyprland session**: it needs `WAYLAND_DISPLAY`,
@@ -120,9 +121,9 @@ sudo pacman -S grim wl-clipboard uv tmux chromium
 ```
 
 Input uses a self-owned **uinput** device, so the process needs read-write on
-`/dev/uinput` — no root, no `ydotoold`. Check with `getfacl /dev/uinput`: if your
-user is listed with `rw` (typically via a `uaccess` udev rule), you're set. If not,
-grant it to whoever is logged in at the seat:
+`/dev/uinput`. It needs no root and no `ydotoold`. Run `getfacl /dev/uinput`. If it
+lists your user with `rw` (typically through a `uaccess` udev rule), you're set. If
+not, add a rule that grants access to the user logged in at the seat:
 
 ```bash
 echo 'KERNEL=="uinput", SUBSYSTEM=="misc", TAG+="uaccess", OPTIONS+="static_node=uinput"' \
@@ -139,7 +140,8 @@ what to install instead of failing on a cryptic traceback.
 
 ## Register with your MCP client
 
-It's a local stdio server — the client starts it on demand, no clone needed.
+It's a local stdio server. The client starts it on demand, and you don't need a
+clone.
 
 **Claude Code:**
 
@@ -168,8 +170,8 @@ command = "uvx"
 args = ["hypr-cua-mcp"]
 ```
 
-**From a local checkout** (the wrapper syncs deps on first launch and makes the
-browser channel attach-only — see [Browser channel](#browser-channel)):
+**From a local checkout:** the wrapper syncs deps on first launch and makes the
+browser channel attach-only (see [Browser channel](#browser-channel)).
 
 ```bash
 claude mcp add hypr-cua -- /path/to/hypr-computer-use-mcp/bin/hypr-cua-mcp
@@ -185,14 +187,14 @@ uvx hypr-cua-mcp --selftest
 ## Browser channel
 
 The `cdp_*` tools drive Chrome/Chromium tabs over the DevTools protocol, so
-browser work needs no window focus. They never open your main profile: by default
-they attach to a browser on port 9222, launching a throwaway Chrome (fresh temp
-profile) there if nothing is listening.
+browser work needs no window focus. They never open your main profile. By default
+they attach to a browser on port 9222. If nothing is listening there, they launch a
+throwaway Chrome with a fresh temp profile.
 
 For logins that persist, run a dedicated automation profile and make the server
-attach-only with `HYPR_CUA_CDP_AUTOLAUNCH=0` (the checkout's `bin/hypr-cua-mcp`
-wrapper sets it for you). In a checkout, `bin/hypr-cua-chrome` starts that
-browser; with `uvx`, the equivalent is:
+attach-only with `HYPR_CUA_CDP_AUTOLAUNCH=0`. The checkout's `bin/hypr-cua-mcp`
+wrapper sets that for you, and `bin/hypr-cua-chrome` starts the browser. With
+`uvx`, the equivalent is:
 
 ```bash
 chromium --user-data-dir="$HOME/.local/share/hypr-cua-chrome" \
@@ -200,7 +202,7 @@ chromium --user-data-dir="$HOME/.local/share/hypr-cua-chrome" \
   --no-first-run --no-default-browser-check
 ```
 
-Log in to only what you're happy to automate: any local process that can reach the
+Log in only to what you're happy to automate. Any local process that can reach the
 debug port can drive that profile.
 
 | Variable | Default | Effect |
@@ -210,9 +212,9 @@ debug port can drive that profile.
 | `HYPR_CUA_CDP_USER_DATA_DIR` | fresh temp dir | Profile directory for an auto-launched browser |
 | `HYPR_CUA_CDP_BIN` | first Chrome/Chromium on `PATH` | Browser binary to auto-launch |
 
-Set them in your client's server config — e.g.
-`claude mcp add hypr-cua -e HYPR_CUA_CDP_AUTOLAUNCH=0 -- uvx hypr-cua-mcp`, or an
-`"env": {…}` block next to `command` in JSON configs.
+Set them in your client's server config. In Claude Code:
+`claude mcp add hypr-cua -e HYPR_CUA_CDP_AUTOLAUNCH=0 -- uvx hypr-cua-mcp`. In JSON
+configs, add an `"env": {…}` block next to `command`.
 
 ## Safety
 
@@ -231,11 +233,11 @@ Set them in your client's server config — e.g.
 
 ## Known limitations
 
-- Typing is US-ASCII only; other characters are skipped. For anything else,
-  `write_clipboard` and paste.
-- Monitors with scale ≠ 1 are unverified: screenshots may be cropped wrong there.
-- The synthetic pointer doesn't hover-focus. Click to focus (or use
-  `move_mouse(follow=True)`).
+- Typing is US-ASCII only: `type_text` skips any other character. For anything
+  else, `write_clipboard` and paste.
+- Capture on monitors with scale ≠ 1 is untested, and the crop is likely off there.
+- The synthetic pointer doesn't hover-focus. Click to focus, or use
+  `move_mouse(follow=True)`.
 - `cdp_click` / `cdp_type` inject JavaScript, so pages that insist on trusted input
   events won't react.
 
@@ -245,9 +247,9 @@ Details, plus the task runner's edge cases:
 ## Project status
 
 **Stable and maintained.** hypr-cua-mcp does what it set out to do, so the commit
-log is quiet on purpose: expect bug fixes, Hyprland-compatibility updates and
+log is quiet on purpose. Expect bug fixes, Hyprland-compatibility updates and
 dependency bumps, not a stream of new features. A quiet repo here means done, not
-abandoned — issues and PRs still get answered.
+abandoned. Issues and PRs still get answered.
 
 ## Contributing
 

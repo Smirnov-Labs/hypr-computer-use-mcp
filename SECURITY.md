@@ -1,9 +1,9 @@
 # Security policy
 
 hypr-cua-mcp drives your real desktop with real input events. It has no sandbox
-and no authentication: it's a local stdio server, started by an MCP client you
-trust, and it can do anything you can. That's the design rather than a
-vulnerability — see [Safety](README.md#safety).
+and no authentication. A trusted MCP client starts it as a local stdio server, and
+it can do anything you can. That's the design, not a vulnerability. See
+[Safety](README.md#safety).
 
 ## Reporting a vulnerability
 
