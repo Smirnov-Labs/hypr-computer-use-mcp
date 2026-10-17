@@ -51,8 +51,8 @@ lessons in [`docs/gotchas.md`](docs/gotchas.md). The short version:
 
 ## Conventions that bite if you ignore them
 
-- **Hyprland is Lua-configured here.** `hyprctl dispatch X` and `hyprctl keyword` are
-  DEAD (parsed as Lua). Mutations go through `hyprctl eval 'hl.dispatch(hl.dsp.<path>({…}))'`
+- **This server targets Lua-configured Hyprland (0.55+).** With a `hyprland.lua`
+  config, `hyprctl dispatch X` and `hyprctl keyword` are DEAD (parsed as Lua). Mutations go through `hyprctl eval 'hl.dispatch(hl.dsp.<path>({…}))'`
   — build these in `hyprcontrol.py`, quoting user strings with `_lua_str`. Window
   targets are the `"address:0x…"` selector.
 - **The `frame_id` contract is load-bearing.** Pointer tools take coordinates *in a
@@ -78,3 +78,14 @@ lessons in [`docs/gotchas.md`](docs/gotchas.md). The short version:
 - Conventional commits (`fix:`, `feat:`, `docs:`) — match the existing history.
 - `uv run pytest` green before pushing; CI (`.github/workflows/ci.yml`) enforces it.
 - Learned something the hard way about Hyprland/Wayland? Add it to `docs/gotchas.md`.
+
+## Releasing
+
+1. Bump `version` in `pyproject.toml` and in **both** `version` fields of
+   `server.json`, then `uv lock` (CI's `uv sync --locked` fails on a stale lock).
+   `__version__` reads the package metadata, so there is no third place.
+2. Merge to `main`, then publish a GitHub release tagged `vX.Y.Z`. That runs
+   `publish.yml`, which uploads to PyPI via Trusted Publishing.
+3. Re-list on the MCP registry: `gh workflow run publish-mcp.yml` (needs the
+   `MCP_DNS_PRIVATE_KEY` repo secret), or locally with
+   `mcp-publisher login dns --domain smirnovlabs.com --private-key <hex> && mcp-publisher publish`.
