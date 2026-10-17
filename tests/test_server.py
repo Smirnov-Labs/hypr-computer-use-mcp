@@ -258,3 +258,14 @@ def test_task_stop_delegates(monkeypatch):
                         lambda name: seen.update(n=name) or "stopped task build")
     assert server.task_stop("build") == "stopped task build"
     assert seen == {"n": "build"}
+
+
+# --- the version clients see in the initialize handshake ---
+
+def test_server_advertises_the_package_version():
+    from importlib.metadata import version
+
+    import hypr_cua_mcp
+
+    assert server.mcp.version == version("hypr-cua-mcp")
+    assert hypr_cua_mcp.__version__ == version("hypr-cua-mcp")
