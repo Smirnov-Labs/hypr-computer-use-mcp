@@ -78,7 +78,10 @@ class _LineWriter:
         self._stream = stream
 
     async def write(self, text: str) -> None:
-        await self._stream.send(text.encode("utf-8"))
+        try:
+            await self._stream.send(text.encode("utf-8"))
+        except (anyio.BrokenResourceError, anyio.ClosedResourceError):
+            pass  # the client has gone; a call that finished after it left has no one to tell
 
     async def flush(self) -> None:
         pass

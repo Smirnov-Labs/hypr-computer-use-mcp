@@ -1,8 +1,10 @@
 """Tests for serve mode: real MCPServer sessions over socketpairs; no real socket
 activation, desktop or process."""
 import json
+import logging
 import os
 import socket
+import time
 
 import anyio
 import anyio.abc
@@ -131,6 +133,32 @@ def test_a_closed_connection_ends_its_session_and_drops_its_frames(desktop):
 
     anyio.run(main)
     assert coords.frames._last == {}
+
+
+def test_a_client_gone_before_its_reply_is_not_logged_as_an_error(monkeypatch, caplog):
+    """A modern session with an open listen stream (as Claude Code keeps) finishes
+    a running call after its client exits, and the reply meets a closed socket.
+    That is a normal exit, not a session error."""
+    monkeypatch.setattr(coords, "require_session", True)
+    monkeypatch.setattr(tmux, "list_panes", lambda: time.sleep(0.3) or [])
+
+    async def main():
+        with anyio.fail_after(10):
+            async with anyio.create_task_group() as tg:
+                client = await _pair(tg)
+                await client.stream.send((json.dumps({
+                    "jsonrpc": "2.0", "id": 5, "method": "subscriptions/listen",
+                    "params": {"_meta": _MODERN, "notifications": {"toolsListChanged": True}}}) + "\n").encode())
+                assert b"acknowledged" in await client.buf.receive_until(b"\n", serve.MAX_LINE)
+                await client.stream.send((json.dumps({
+                    "jsonrpc": "2.0", "id": 9, "method": "tools/call",
+                    "params": {"name": "tmux_list", "arguments": {}, "_meta": _MODERN}}) + "\n").encode())
+                await client.stream.aclose()  # the client exits before the reply
+            # the task group exits once serve_connection has returned
+
+    with caplog.at_level(logging.WARNING, logger="hypr_cua_mcp.serve"):
+        anyio.run(main)
+    assert [r.getMessage() for r in caplog.records if r.name == "hypr_cua_mcp.serve"] == []
 
 
 def test_idle_connections_do_not_starve_an_active_one(monkeypatch):
