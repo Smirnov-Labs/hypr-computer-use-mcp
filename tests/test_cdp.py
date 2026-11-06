@@ -2,14 +2,17 @@
 the autouse fixture swaps in a fake browser manager at a fixed base URL, with
 browser._spawn as a tripwire. tests/conftest.py also points any stray real call at
 port 1 with autolaunch off."""
+import base64
+import io
 import json
 import time
 from contextlib import contextmanager
 
 import pytest
 import websocket
+from PIL import Image as PILImage
 
-from hypr_cua_mcp import browser, cdp
+from hypr_cua_mcp import browser, capture, cdp
 
 BASE = "http://127.0.0.1:9999"
 
@@ -479,3 +482,48 @@ def test_open_tab_reports_timed_out_when_target_creation_stalls(monkeypatch):
     _wire(monkeypatch, ws, [])
     out = cdp.open_tab("https://x", timeout=1)
     assert out["timed_out"] is True and out["id"] is None
+
+
+# --- screenshot --------------------------------------------------------------
+
+def _png_b64(w, h):
+    buf = io.BytesIO()
+    PILImage.new("RGB", (w, h), (255, 0, 0)).save(buf, format="PNG")
+    return base64.b64encode(buf.getvalue()).decode()
+
+
+def test_screenshot_scales_inside_chrome(monkeypatch):
+    ws = ScriptWS(replies={
+        "Page.getLayoutMetrics": {"cssVisualViewport": {
+            "clientWidth": 3000, "clientHeight": 2000, "pageX": 0, "pageY": 40}},
+        "Page.captureScreenshot": {"data": _png_b64(4, 3)},
+        "Runtime.evaluate": _evals(lambda e: {"title": "T", "url": "http://p/", "dpr": 1}),
+    })
+    _wire(monkeypatch, ws, [_page("T1")])
+    png, meta = cdp.screenshot("T1")
+    clip = next(f for f in ws.sent if f["method"] == "Page.captureScreenshot")["params"]["clip"]
+    assert (clip["x"], clip["y"], clip["width"], clip["height"]) == (0, 40, 3000, 2000)
+    assert clip["scale"] == pytest.approx(capture._fit_scale(3000, 2000))
+    assert png.startswith(b"\x89PNG")
+    assert meta == {"title": "T", "url": "http://p/", "width": 4, "height": 3}
+
+
+def test_screenshot_divides_the_scale_by_the_device_pixel_ratio(monkeypatch):
+    ws = ScriptWS(replies={
+        "Page.getLayoutMetrics": {"cssVisualViewport": {"clientWidth": 2000, "clientHeight": 1000}},
+        "Page.captureScreenshot": {"data": _png_b64(4, 2)},
+        "Runtime.evaluate": _evals(lambda e: {"title": "", "url": "", "dpr": 2}),
+    })
+    _wire(monkeypatch, ws, [_page("T1")])
+    cdp.screenshot("T1")
+    clip = next(f for f in ws.sent if f["method"] == "Page.captureScreenshot")["params"]["clip"]
+    assert clip["scale"] == pytest.approx(capture._fit_scale(2000, 1000) / 2)
+
+
+@pytest.mark.parametrize("w,h", [(0, 600), (800, -1), (None, 600)])
+def test_screenshot_rejects_an_unusable_viewport(monkeypatch, w, h):
+    ws = ScriptWS(replies={"Page.getLayoutMetrics": {
+        "cssVisualViewport": {"clientWidth": w, "clientHeight": h}}})
+    _wire(monkeypatch, ws, [_page("T1")])
+    with pytest.raises(cdp.CdpError):
+        cdp.screenshot("T1")

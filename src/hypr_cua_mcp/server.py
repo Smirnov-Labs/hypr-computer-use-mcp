@@ -346,6 +346,20 @@ def cdp_read(target: str, selector: str | None = None, max_chars: int = 20000) -
 
 
 @mcp.tool(structured_output=False)
+def cdp_screenshot(target: str):
+    """Screenshot a tab's viewport in the copilot browser (no window focus needed).
+    The image has no frame_id: act on the page with cdp_click or cdp_eval, not with
+    the desktop pointer tools."""
+    png, meta = cdp.screenshot(target)
+    caption = (
+        f"Screenshot of tab {target} ({meta['title']!r}, {meta['url']}), "
+        f"{meta['width']}x{meta['height']}px. No frame_id: the desktop pointer tools "
+        "can't act on this image; use cdp_click or cdp_eval."
+    )
+    return [Image(data=png, format="png"), caption]
+
+
+@mcp.tool(structured_output=False)
 def cdp_click(target: str, selector: str) -> str:
     """Click the first element matching a CSS selector in a tab (by id). Errors if
     nothing matches the selector."""

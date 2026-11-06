@@ -10,12 +10,16 @@ endpoints) and _ws_connect (a WebSocket to one target).
 """
 from __future__ import annotations
 
+import base64
+import io
 import json
+import math
 import time
 
 import websocket
+from PIL import Image as PILImage
 
-from . import browser
+from . import browser, capture
 from .browser import CdpError, CdpTimeout
 
 CMD_TIMEOUT = 10   # seconds: the deadline for operations without a timeout argument
@@ -421,3 +425,33 @@ def close_tab(target: str) -> str:
     if res.get("success") is False:
         raise CdpError(f"could not close tab {target} (no such target?)")
     return f"closed tab {target}"
+
+
+def _usable(v) -> bool:
+    return isinstance(v, (int, float)) and math.isfinite(v) and v > 0
+
+
+def screenshot(target: str) -> tuple[bytes, dict]:
+    """PNG of a tab's viewport, scaled to the vision budget inside Chrome.
+
+    The scale is divided by window.devicePixelRatio, so a high-DPI browser lands on
+    the same budget. Returns (png, {title, url, width, height})."""
+    with browser.manager.use() as base:
+        sess = _page_session(base, target, _Deadline(CMD_TIMEOUT))
+        try:
+            vp = sess.command("Page.getLayoutMetrics").get("cssVisualViewport") or {}
+            w, h = vp.get("clientWidth"), vp.get("clientHeight")
+            if not (_usable(w) and _usable(h)):
+                raise CdpError(f"the page reported an unusable viewport size {w!r}x{h!r}")
+            info = _evaluate(sess, "({title: document.title, url: location.href,"
+                                   " dpr: window.devicePixelRatio})") or {}
+            dpr = info.get("dpr") if _usable(info.get("dpr")) else 1
+            shot = sess.command("Page.captureScreenshot", {"format": "png", "clip": {
+                "x": vp.get("pageX", 0), "y": vp.get("pageY", 0),
+                "width": w, "height": h, "scale": capture._fit_scale(w, h) / dpr}})
+        finally:
+            sess.close()
+    png = base64.b64decode(shot.get("data") or "")
+    width, height = PILImage.open(io.BytesIO(png)).size  # reads the header only
+    return png, {"title": info.get("title"), "url": info.get("url"),
+                 "width": width, "height": height}

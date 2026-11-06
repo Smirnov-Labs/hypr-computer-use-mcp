@@ -303,6 +303,15 @@ def test_cdp_read_passes_selector_and_max_chars(monkeypatch):
     assert seen == {"a": ("T1", "main", 100)}
 
 
+def test_cdp_screenshot_returns_an_image_and_a_caption_without_frame_id(monkeypatch):
+    monkeypatch.setattr(cdp, "screenshot",
+                        lambda t: (b"\x89PNGfake", {"title": "T", "url": "http://p/",
+                                                    "width": 4, "height": 3}))
+    img, caption = server.cdp_screenshot("T1")
+    assert img.data == b"\x89PNGfake"
+    assert "4x3px" in caption and "No frame_id" in caption
+
+
 def test_main_installs_exit_handlers_before_serving(monkeypatch):
     order = []
     monkeypatch.setattr(server.sys, "argv", ["hypr-cua-mcp"])
