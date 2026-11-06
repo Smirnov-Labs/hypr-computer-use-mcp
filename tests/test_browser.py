@@ -344,12 +344,90 @@ def test_health_probes_get_only_the_deadlines_remaining_time(env, monkeypatch):
     assert len(seen) == 2 and all(t == 2 for t in seen)
 
 
-def test_launch_time_is_added_back_to_the_deadline(env):
+class ClockDeadline:
+    """Like cdp._Deadline, but on the env fixture's fake clock."""
+
+    def __init__(self, env, timeout):
+        self.env, self.at = env, env["now"] + timeout
+
+    def left(self, what):
+        left = self.at - self.env["now"]
+        if left <= 0:
+            raise browser.CdpTimeout(f"{what}: out of time")
+        return left
+
+    def extend(self, seconds):
+        self.at += seconds
+
+
+def test_launch_time_is_added_back_to_the_deadline(env, monkeypatch):
+    fake_spawn = browser._spawn
+
+    def slow_spawn(argv):
+        env["now"] += 3  # the launch takes 3 s of the fake clock
+        return fake_spawn(argv)
+
+    monkeypatch.setattr(browser, "_spawn", slow_spawn)
     dl = FakeDeadline(5)
     with env["manager"].use(dl):
         pass
     assert env["manager"].mode == "private"
-    assert dl.extended > 0
+    assert dl.extended == 3
+
+
+def test_lock_wait_is_credited_before_the_health_probe(env):
+    env["automation_up"] = True
+    m = env["manager"]
+    dl = ClockDeadline(env, 1.0)
+    result = {}
+
+    def call():
+        try:
+            with m.use(dl) as base:
+                result["base"] = base
+        except Exception as exc:  # noqa: BLE001 - report it to the assertion
+            result["exc"] = exc
+
+    m._lock.acquire()
+    worker = threading.Thread(target=call)
+    worker.start()
+    time.sleep(0.05)      # the call is now waiting for the lock...
+    env["now"] += 2       # ...for 2 s of the fake clock, twice its budget
+    m._lock.release()
+    worker.join(2)
+    assert result == {"base": "http://127.0.0.1:9222"}
+
+
+def test_cleanup_time_is_credited_before_the_next_probe(env, monkeypatch):
+    m = env["manager"]
+    with m.use():
+        pass
+    env["spawned"][0][1].alive = False  # the private Chrome died
+    env["automation_up"] = True
+    real_kill = browser._kill_group
+
+    def slow_kill(proc, wait):
+        env["now"] += 2  # cleaning it up takes 2 s
+        real_kill(proc, wait)
+
+    monkeypatch.setattr(browser, "_kill_group", slow_kill)
+    with m.use(ClockDeadline(env, 1.0)) as base:
+        assert base == "http://127.0.0.1:9222"
+
+
+@pytest.mark.parametrize("autolaunch", ["0", "1"])
+def test_a_probe_that_uses_up_the_deadline_is_a_timeout(env, monkeypatch, autolaunch):
+    monkeypatch.setenv("HYPR_CUA_CDP_AUTOLAUNCH", autolaunch)
+
+    def slow_unreachable(url, timeout=None):
+        env["now"] += 1.5  # the probe eats the whole budget, then fails
+        raise browser.CdpTimeout("no reply")
+
+    monkeypatch.setattr(browser, "http_get_json", slow_unreachable)
+    with pytest.raises(browser.CdpTimeout):
+        with env["manager"].use(ClockDeadline(env, 1.0)):
+            pass
+    assert env["spawned"] == []
 
 
 def test_an_exhausted_deadline_stops_browser_selection(env):

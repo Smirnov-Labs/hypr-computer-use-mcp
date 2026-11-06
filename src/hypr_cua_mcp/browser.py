@@ -163,6 +163,12 @@ def _probe_timeout(dl) -> float:
     return HTTP_TIMEOUT if dl is None else min(HTTP_TIMEOUT, dl.left("browser probe"))
 
 
+def _credit(dl, seconds: float) -> None:
+    """Give time the call's budget does not count back to its deadline."""
+    if dl is not None and seconds > 0:
+        dl.extend(seconds)
+
+
 class BrowserManager:
     """Picks the browser for CDP calls and runs the private Chrome's lifecycle."""
 
@@ -183,17 +189,16 @@ class BrowserManager:
 
         `dl` is the call's deadline (left(what) -> seconds, raising CdpTimeout when
         none remain; extend(seconds)). Health probes get only its remaining time.
-        Waiting for the lock and stopping or launching a private Chrome are added
-        back to it, because the spec excludes the launch from the call's budget."""
-        t0 = time.monotonic()
+        Waiting for the lock and stopping or launching a private Chrome are credited
+        back to it as soon as each ends, because the spec excludes the launch from
+        the call's budget."""
+        t0 = _now()
         with self._lock:
-            excluded = time.monotonic() - t0
+            _credit(dl, _now() - t0)  # waiting behind another call is not this call's time
             if not self._healthy(dl):
-                excluded += self._choose(dl)
+                self._choose(dl)
             self._active += 1
             base = self.base
-        if dl is not None:
-            dl.extend(excluded)
         try:
             yield base
         finally:
@@ -210,26 +215,30 @@ class BrowserManager:
             return reachable(self.base, _probe_timeout(dl))
         return False
 
-    def _choose(self, dl) -> float:
-        """Pick the browser. Returns the seconds spent stopping or launching a private
-        Chrome, which the caller's deadline does not count."""
-        t0 = time.monotonic()
+    def _choose(self, dl) -> None:
+        """Pick the browser. Stopping or launching a private Chrome is credited back
+        to the caller's deadline; a probe that used it up raises CdpTimeout."""
+        t0 = _now()
         self._stop_private(wait=2.0)  # clears a dead private Chrome's leftovers
-        excluded = time.monotonic() - t0
+        _credit(dl, _now() - t0)
         self.mode = self.base = None
         base = automation_endpoint()
         if reachable(base, _probe_timeout(dl)):
             self.mode, self.base = "automation", base
-            return excluded
+            return
+        if dl is not None:
+            dl.left("browser probe")  # the failed probe may have spent the whole budget
         if not _autolaunch_enabled():
             raise CdpError(
                 f"No Chrome DevTools endpoint at {base}, and HYPR_CUA_CDP_AUTOLAUNCH=0. "
                 "Start the automation Chrome with bin/hypr-cua-chrome, or unset the "
                 "variable so hypr-cua starts a private headless Chrome."
             )
-        t1 = time.monotonic()
-        self._launch_private()
-        return excluded + (time.monotonic() - t1)
+        t1 = _now()
+        try:
+            self._launch_private()
+        finally:
+            _credit(dl, _now() - t1)
 
     def _launch_private(self) -> None:
         if _shutting_down:
