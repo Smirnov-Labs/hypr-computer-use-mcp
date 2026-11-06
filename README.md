@@ -171,7 +171,8 @@ command = "uvx"
 args = ["hypr-cua-mcp"]
 ```
 
-**From a local checkout:** the wrapper syncs deps on first launch.
+**From a local checkout:** the wrapper syncs deps on first launch. When a
+[shared server](#one-shared-server-per-login) is running, the wrapper connects to it.
 
 ```bash
 claude mcp add hypr-cua -- /path/to/hypr-computer-use-mcp/bin/hypr-cua-mcp
@@ -183,6 +184,44 @@ Smoke-test the plumbing first (read-only, no clicks):
 ```bash
 uvx hypr-cua-mcp --selftest
 ```
+
+## One shared server per login
+
+By default each MCP client session starts its own hypr-cua. From a checkout you can
+run one shared server per desktop login instead. A session then connects in
+milliseconds and costs about 12 MB instead of about 94 MB. `bin/hypr-cua-mcp`
+connects to the shared server when it runs. When it doesn't, the wrapper starts a
+stdio server for the session, so the registration stays the same.
+
+1. Install the units. Run this in the checkout:
+
+   ```bash
+   uv sync
+   mkdir -p ~/.config/systemd/user
+   cp contrib/systemd/hypr-cua.socket ~/.config/systemd/user/
+   sed "s|@CHECKOUT@|$PWD|" contrib/systemd/hypr-cua.service > ~/.config/systemd/user/hypr-cua.service
+   systemctl --user daemon-reload
+   ```
+
+2. Start the socket from your Hyprland startup, so each new server gets the current
+   session's variables. In `hyprland.lua`, inside your startup handler:
+
+   ```lua
+   hl.exec_cmd("systemctl --user import-environment DISPLAY WAYLAND_DISPLAY HYPRLAND_INSTANCE_SIGNATURE XDG_CURRENT_DESKTOP; systemctl --user stop hypr-cua.service; systemctl --user restart hypr-cua.socket")
+   ```
+
+   Run the same command in a terminal once to start it without logging out.
+
+3. Reconnect your MCP sessions (in Claude Code: `/mcp` → reconnect).
+
+To upgrade, run `git pull && uv sync && systemctl --user restart hypr-cua.service`.
+Open sessions reconnect by themselves. A call that was running during the restart
+fails once with a message that it may have completed. The restart also ends
+hypr-cua's tmux sessions and tasks.
+
+Sessions share the server's browser. Its `HYPR_CUA_CDP_*` settings come from the
+service's `Environment=` lines, not from the client. Screenshots stay per session:
+the server rejects another session's `frame_id` as stale.
 
 ## Browser channel
 

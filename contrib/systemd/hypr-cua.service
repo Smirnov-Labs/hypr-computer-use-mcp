@@ -1,0 +1,14 @@
+# Started by hypr-cua.socket. When you install it, replace @CHECKOUT@ with the
+# absolute path of your hypr-computer-use-mcp checkout.
+[Unit]
+Description=hypr-cua MCP server, shared by this login's MCP clients
+Requires=hypr-cua.socket
+After=hypr-cua.socket
+PartOf=graphical-session.target
+
+[Service]
+ExecStart=@CHECKOUT@/.venv/bin/hypr-cua-mcp --serve
+Restart=on-failure
+# Browser settings apply to every client of this service. For example:
+#Environment=HYPR_CUA_CDP_PORT=9222
+#Environment=HYPR_CUA_CDP_AUTOLAUNCH=0
