@@ -190,13 +190,17 @@ def test_cdp_eval_delegates_with_timeout_and_json_encodes(monkeypatch):
     assert out == '{"n":7}'
 
 
-def test_cdp_open_delegates(monkeypatch):
+def test_cdp_open_and_navigate_pass_wait_for_and_timeout(monkeypatch):
     seen = {}
     monkeypatch.setattr(cdp, "open_tab",
-                        lambda url: seen.update(url=url) or {"id": "N1", "url": url})
-    out = server.cdp_open("https://x")
-    assert seen == {"url": "https://x"}
-    assert "N1" in out
+                        lambda url, wait_for, timeout: seen.update(open=(url, wait_for, timeout))
+                        or {"id": "N1", "timed_out": False})
+    monkeypatch.setattr(cdp, "navigate",
+                        lambda target, url, wait_for, timeout: seen.update(nav=(target, url, wait_for, timeout))
+                        or {"id": target, "timed_out": True})
+    assert "N1" in server.cdp_open("https://x", wait_for="#a", timeout=5)
+    assert '"timed_out":true' in server.cdp_navigate("T1", "https://y")
+    assert seen == {"open": ("https://x", "#a", 5), "nav": ("T1", "https://y", None, 30)}
 
 
 def test_cdp_type_delegates_and_hides_text(monkeypatch):

@@ -334,23 +334,118 @@ def test_type_text_sets_value_and_hides_text(monkeypatch):
     assert "6 chars" in out and "a@b.co" not in out
 
 
-def test_navigate_sends_page_navigate(monkeypatch):
-    ws = AutoWS(result={"frameId": "F1", "loaderId": "L1"})
-    _wire(monkeypatch, ws, [_page("T1")])
-    out = cdp.navigate("T1", "https://example.com")
-    assert ws.sent[0]["method"] == "Page.navigate"
-    assert out["frameId"] == "F1"
-
-
-def test_open_tab_creates_target_via_browser_ws(monkeypatch):
-    ws = AutoWS(result={"targetId": "NEW42"})
-    _wire(monkeypatch, ws, [])
-    assert cdp.open_tab("https://example.com") == {"id": "NEW42", "url": "https://example.com"}
-    assert ws.sent[0]["method"] == "Target.createTarget"
-
-
 def test_close_tab_closes_target(monkeypatch):
     ws = AutoWS(result={"success": True})
     _wire(monkeypatch, ws, [])
     assert "T7" in cdp.close_tab("T7")
     assert ws.sent[0] == {"id": 1, "method": "Target.closeTarget", "params": {"targetId": "T7"}}
+
+
+# --- waiting for the requested navigation -------------------------------------
+
+STATE = {"url": "https://x/final", "title": "X", "ready_state": "complete"}
+
+
+def _load(loader):
+    return {"method": "Page.lifecycleEvent", "params": {"name": "load", "loaderId": loader}}
+
+
+def test_navigate_waits_for_the_load_event_of_its_own_loader(monkeypatch):
+    ws = ScriptWS(replies={"Page.navigate": {"frameId": "F", "loaderId": "L2"},
+                           "Runtime.evaluate": _evals(lambda e: STATE)},
+                  after={"Page.navigate": [_load("L1"), _load("L2")]})
+    _wire(monkeypatch, ws, [_page("T1")])
+    out = cdp.navigate("T1", "https://x", timeout=5)
+    assert [f["method"] for f in ws.sent][:3] == [
+        "Page.enable", "Page.setLifecycleEventsEnabled", "Page.navigate"]
+    assert out["timed_out"] is False
+    assert (out["url"], out["title"], out["ready_state"]) == ("https://x/final", "X", "complete")
+    assert out["id"] == "T1" and isinstance(out["waited_ms"], int)
+
+
+def test_navigate_uses_a_load_event_that_came_before_the_reply(monkeypatch):
+    ws = ScriptWS(replies={"Page.navigate": {"frameId": "F", "loaderId": "L9"},
+                           "Runtime.evaluate": _evals(lambda e: STATE)},
+                  before={"Page.navigate": [_load("L9")]})
+    _wire(monkeypatch, ws, [_page("T1")])
+    assert cdp.navigate("T1", "https://x")["timed_out"] is False
+
+
+def test_same_document_navigation_needs_no_load_event(monkeypatch):
+    ws = ScriptWS(replies={"Page.navigate": {"frameId": "F"},
+                           "Runtime.evaluate": _evals(lambda e: STATE)})
+    _wire(monkeypatch, ws, [_page("T1")])
+    assert cdp.navigate("T1", "https://x#part")["timed_out"] is False
+
+
+def test_navigate_reports_timed_out_without_raising(monkeypatch):
+    ws = ScriptWS(replies={"Page.navigate": {"frameId": "F", "loaderId": "L2"}})
+    _wire(monkeypatch, ws, [_page("T1")])
+    out = cdp.navigate("T1", "https://slow")
+    assert out["timed_out"] is True
+    assert out["url"] is None and out["title"] is None and out["ready_state"] is None
+
+
+def test_navigate_reports_timed_out_when_discovery_stalls(monkeypatch):
+    def stalled(url, timeout=None):
+        raise browser.CdpTimeout("no reply")
+
+    monkeypatch.setattr(browser, "http_get_json", stalled)
+    out = cdp.navigate("T1", "https://x", timeout=1)
+    assert out["timed_out"] is True and out["id"] == "T1"
+
+
+def test_navigate_polls_until_the_selector_matches(monkeypatch):
+    monkeypatch.setattr(cdp, "POLL_S", 0)
+    probes = []
+
+    def value(expr):
+        if "querySelector" in expr:
+            probes.append(expr)
+            return len(probes) >= 3
+        return STATE
+
+    ws = ScriptWS(replies={"Page.navigate": {"frameId": "F", "loaderId": "L1"},
+                           "Runtime.evaluate": _evals(value)},
+                  after={"Page.navigate": [_load("L1")]})
+    _wire(monkeypatch, ws, [_page("T1")])
+    out = cdp.navigate("T1", "https://spa", wait_for="#app .ready")
+    assert out["timed_out"] is False
+    assert len(probes) == 3 and '"#app .ready"' in probes[0]
+
+
+def test_navigate_error_text_raises(monkeypatch):
+    ws = ScriptWS(replies={"Page.navigate": {"frameId": "F", "errorText": "net::ERR_NAME_NOT_RESOLVED"}})
+    _wire(monkeypatch, ws, [_page("T1")])
+    with pytest.raises(cdp.CdpError) as e:
+        cdp.navigate("T1", "https://nope.invalid")
+    assert "ERR_NAME_NOT_RESOLVED" in str(e.value)
+
+
+def test_open_tab_creates_a_blank_tab_then_navigates_and_waits(monkeypatch):
+    ws = ScriptWS(replies={"Target.createTarget": {"targetId": "T9"},
+                           "Page.navigate": {"frameId": "F", "loaderId": "L1"},
+                           "Runtime.evaluate": _evals(lambda e: STATE)},
+                  after={"Page.navigate": [_load("L1")]})
+    _wire(monkeypatch, ws, [_page("T9")])
+    out = cdp.open_tab("https://x", timeout=5)
+    create = next(f for f in ws.sent if f["method"] == "Target.createTarget")
+    nav = next(f for f in ws.sent if f["method"] == "Page.navigate")
+    assert create["params"] == {"url": "about:blank"}
+    assert nav["params"] == {"url": "https://x"}
+    assert out["id"] == "T9" and out["timed_out"] is False
+
+
+def test_open_tab_blank_needs_no_wait(monkeypatch):
+    ws = ScriptWS(replies={"Target.createTarget": {"targetId": "T3"}})
+    _wire(monkeypatch, ws, [_page("T3")])
+    out = cdp.open_tab()
+    assert out["id"] == "T3" and out["url"] == "about:blank" and out["timed_out"] is False
+    assert [f["method"] for f in ws.sent] == ["Target.createTarget"]
+
+
+def test_open_tab_reports_timed_out_when_target_creation_stalls(monkeypatch):
+    ws = ScriptWS(silent={"Target.createTarget"})
+    _wire(monkeypatch, ws, [])
+    out = cdp.open_tab("https://x", timeout=1)
+    assert out["timed_out"] is True and out["id"] is None

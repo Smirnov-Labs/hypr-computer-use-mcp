@@ -20,6 +20,7 @@ from .browser import CdpError, CdpTimeout
 
 CMD_TIMEOUT = 10   # seconds: the deadline for operations without a timeout argument
 MAX_TIMEOUT = 300  # seconds: the largest timeout a caller may ask for
+POLL_S = 0.1       # seconds between selector polls
 _CONTEXT_GONE = (
     "Execution context was destroyed",
     "Cannot find context",
@@ -223,32 +224,107 @@ def list_targets() -> dict:
     return {"browser": mode, "tabs": tabs}
 
 
-def open_tab(url: str = "about:blank") -> dict:
-    """Open a new tab via Target.createTarget. Returns {id, url}."""
-    url = url or "about:blank"
-    with browser.manager.use() as base:
-        sess = _browser_session(base, _Deadline(CMD_TIMEOUT))
-        try:
-            res = sess.command("Target.createTarget", {"url": url})
-        finally:
-            sess.close()
-    tid = res.get("targetId")
-    if not tid:
-        raise CdpError(f"Target.createTarget returned no targetId: {res}")
-    return {"id": tid, "url": url}
+_STATE_JS = "({url: location.href, title: document.title, ready_state: document.readyState})"
 
 
-def navigate(target: str, url: str) -> dict:
-    """Navigate a tab with Page.navigate. Returns {id, url, frameId}."""
-    with browser.manager.use() as base:
-        sess = _page_session(base, target, _Deadline(CMD_TIMEOUT))
-        try:
-            res = sess.command("Page.navigate", {"url": url})
-        finally:
-            sess.close()
+def _nav_result(target, state, dl: _Deadline, timed_out: bool) -> dict:
+    state = state if isinstance(state, dict) else {}
+    return {
+        "id": target,
+        "url": state.get("url"),
+        "title": state.get("title"),
+        "ready_state": state.get("ready_state"),
+        "waited_ms": round((time.monotonic() - dl.started) * 1000),
+        "timed_out": timed_out,
+    }
+
+
+def _is_load_of(loader_id: str):
+    def match(msg: dict) -> bool:
+        p = msg.get("params") or {}
+        return (msg.get("method") == "Page.lifecycleEvent" and p.get("name") == "load"
+                and p.get("loaderId") == loader_id)
+    return match
+
+
+def _navigate_and_wait(sess: _Session, target: str, url: str, wait_for: str | None) -> dict:
+    """Navigate sess's page, then wait for that navigation's load event and for
+    `wait_for`. At the deadline, return timed_out=True with null page fields."""
+    dl = sess.dl
+    try:
+        sess.command("Page.enable")
+        sess.command("Page.setLifecycleEventsEnabled", {"enabled": True})
+        res = sess.command("Page.navigate", {"url": url})
+    except CdpTimeout:
+        return _nav_result(target, None, dl, timed_out=True)
     if res.get("errorText"):
         raise CdpError(f"navigate to {url} failed: {res['errorText']}")
-    return {"id": target, "url": url, "frameId": res.get("frameId")}
+    loader = res.get("loaderId")  # absent for a same-document navigation
+    if loader and sess.wait_event(_is_load_of(loader)) is None:
+        return _nav_result(target, None, dl, timed_out=True)
+    if wait_for:
+        probe = "!!document.querySelector(" + json.dumps(wait_for) + ")"
+        while True:
+            try:
+                if _evaluate(sess, probe):
+                    break
+            except CdpTimeout:
+                return _nav_result(target, None, dl, timed_out=True)
+            except CdpError as exc:
+                if not _is_context_gone(exc):
+                    raise
+            left = dl.at - time.monotonic()
+            if left <= 0:
+                return _nav_result(target, None, dl, timed_out=True)
+            time.sleep(min(POLL_S, left))
+    try:
+        state = _evaluate(sess, _STATE_JS)
+    except CdpTimeout:
+        return _nav_result(target, None, dl, timed_out=True)
+    return _nav_result(target, state, dl, timed_out=False)
+
+
+def open_tab(url: str = "about:blank", wait_for: str | None = None, timeout: float = 30) -> dict:
+    """Open a tab, navigate it to `url` and wait like navigate()."""
+    url = url or "about:blank"
+    with browser.manager.use() as base:
+        dl = _Deadline(clamp_timeout(timeout))
+        try:
+            bs = _browser_session(base, dl)
+            try:
+                tid = bs.command("Target.createTarget", {"url": "about:blank"}).get("targetId")
+            finally:
+                bs.close()
+        except CdpTimeout:
+            return _nav_result(None, None, dl, timed_out=True)
+        if not tid:
+            raise CdpError("Target.createTarget returned no targetId")
+        if url == "about:blank" and not wait_for:
+            return _nav_result(tid, {"url": "about:blank", "title": "", "ready_state": "complete"},
+                               dl, timed_out=False)
+        try:
+            sess = _page_session(base, tid, dl)
+        except CdpTimeout:
+            return _nav_result(tid, None, dl, timed_out=True)
+        try:
+            return _navigate_and_wait(sess, tid, url, wait_for)
+        finally:
+            sess.close()
+
+
+def navigate(target: str, url: str, wait_for: str | None = None, timeout: float = 30) -> dict:
+    """Navigate a tab and wait for that navigation's load event (and for CSS selector
+    `wait_for`). Returns {id, url, title, ready_state, waited_ms, timed_out}."""
+    with browser.manager.use() as base:
+        dl = _Deadline(clamp_timeout(timeout))
+        try:
+            sess = _page_session(base, target, dl)
+        except CdpTimeout:
+            return _nav_result(target, None, dl, timed_out=True)
+        try:
+            return _navigate_and_wait(sess, target, url, wait_for)
+        finally:
+            sess.close()
 
 
 def eval_js(target: str, expression: str, timeout: float = 30):

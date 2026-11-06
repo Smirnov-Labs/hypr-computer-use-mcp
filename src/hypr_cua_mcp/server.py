@@ -314,15 +314,19 @@ def cdp_targets() -> str:
 
 
 @mcp.tool(structured_output=False)
-def cdp_open(url: str = "about:blank") -> str:
-    """Open a new tab in the copilot browser. Returns the new tab's {id, url} as JSON."""
-    return _json(cdp.open_tab(url))
+def cdp_open(url: str = "about:blank", wait_for: str | None = None, timeout: float = 30) -> str:
+    """Open a new tab at `url` and wait for it to load, plus for CSS selector
+    `wait_for` if given. Returns JSON {id, url, title, ready_state, waited_ms,
+    timed_out}. A page still loading at `timeout` (1 to 300 s) returns
+    timed_out=true instead of failing."""
+    return _json(cdp.open_tab(url, wait_for=wait_for, timeout=timeout))
 
 
 @mcp.tool(structured_output=False)
-def cdp_navigate(target: str, url: str) -> str:
-    """Navigate a tab (by id from cdp_targets) to a URL. Returns {id, url, frameId}."""
-    return _json(cdp.navigate(target, url))
+def cdp_navigate(target: str, url: str, wait_for: str | None = None, timeout: float = 30) -> str:
+    """Navigate a tab (by id from cdp_targets) and wait like cdp_open. Returns the
+    same JSON."""
+    return _json(cdp.navigate(target, url, wait_for=wait_for, timeout=timeout))
 
 
 @mcp.tool(structured_output=False)
