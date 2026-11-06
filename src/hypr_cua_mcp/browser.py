@@ -68,10 +68,10 @@ def http_get_json(url: str, timeout: float = HTTP_TIMEOUT):
         raise CdpError(f"CDP HTTP response from {url} was not JSON: {exc}") from exc
 
 
-def reachable(base: str) -> bool:
-    """True when a DevTools endpoint answers at `base`."""
+def reachable(base: str, timeout: float = HTTP_TIMEOUT) -> bool:
+    """True when a DevTools endpoint answers at `base` within `timeout` seconds."""
     try:
-        http_get_json(base + "/json/version")
+        http_get_json(base + "/json/version", timeout=timeout)
         return True
     except CdpError:
         return False
@@ -106,7 +106,7 @@ def _spawn(argv: list[str]) -> subprocess.Popen:
             argv, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
             start_new_session=True,
         )
-    except FileNotFoundError as exc:
+    except OSError as exc:  # not found, permission denied, bad executable format
         raise CdpError(f"could not launch {argv[0]!r}: {exc}") from exc
 
 
@@ -170,13 +170,15 @@ class BrowserManager:
         self._active = 0               # calls in progress
         self._last_done = 0.0          # _now() when the last call finished
         self._timer = None
+        self._spawning = False         # a launch is between spawn and publishing _proc
 
     @contextmanager
-    def use(self):
-        """Yield the base URL for one CDP call; the idle stop waits while it runs."""
+    def use(self, probe_timeout: float = HTTP_TIMEOUT):
+        """Yield the base URL for one CDP call; the idle stop waits while it runs.
+        Health probes of the automation Chrome get at most `probe_timeout` seconds."""
         with self._lock:
-            if not self._healthy():
-                self._choose()
+            if not self._healthy(probe_timeout):
+                self._choose(probe_timeout)
             self._active += 1
             base = self.base
         try:
@@ -188,18 +190,18 @@ class BrowserManager:
                 if self.mode == "private":
                     self._arm_idle_timer()
 
-    def _healthy(self) -> bool:
+    def _healthy(self, probe_timeout: float) -> bool:
         if self.mode == "private":
             return self._proc is not None and self._proc.poll() is None
         if self.mode == "automation":
-            return reachable(self.base)
+            return reachable(self.base, probe_timeout)
         return False
 
-    def _choose(self) -> None:
+    def _choose(self, probe_timeout: float) -> None:
         self._stop_private(wait=2.0)  # clears a dead private Chrome's leftovers
         self.mode = self.base = None
         base = automation_endpoint()
-        if reachable(base):
+        if reachable(base, probe_timeout):
             self.mode, self.base = "automation", base
             return
         if not _autolaunch_enabled():
@@ -211,18 +213,24 @@ class BrowserManager:
         self._launch_private()
 
     def _launch_private(self) -> None:
+        if _shutting_down:
+            raise CdpError("hypr-cua is shutting down; not starting a private Chrome")
         binary = find_chrome()
         profile = _new_profile_dir()
+        self._spawning = True  # shutdown() waits briefly for _proc while this is set
         try:
-            proc = _spawn([
-                binary, "--headless=new", "--remote-debugging-port=0",
-                f"--user-data-dir={profile}", "--no-first-run", "--no-default-browser-check",
-                "about:blank",
-            ])
-        except CdpError:
-            shutil.rmtree(profile, ignore_errors=True)
-            raise
-        self._proc, self._dir = proc, profile  # shutdown() can see it from here on
+            try:
+                proc = _spawn([
+                    binary, "--headless=new", "--remote-debugging-port=0",
+                    f"--user-data-dir={profile}", "--no-first-run",
+                    "--no-default-browser-check", "about:blank",
+                ])
+            except CdpError:
+                shutil.rmtree(profile, ignore_errors=True)
+                raise
+            self._proc, self._dir = proc, profile  # shutdown() can see it from here on
+        finally:
+            self._spawning = False
         try:
             port = _read_port(profile, proc)
         except CdpError:
@@ -269,10 +277,12 @@ def shutdown(signum=None, frame=None) -> None:
     Lock-free, to fit Claude Code's SIGINT, then SIGTERM 100 ms later, then SIGKILL
     400 ms after that. A second signal, even one that lands during the first
     cleanup, SIGKILLs Chrome's group and exits at once. A SIGKILL during the profile
-    removal is harmless, because Chrome is already stopped."""
+    removal is harmless, because Chrome is already stopped. No new private Chrome
+    starts once shutdown begins, and one caught between spawn and publish is waited
+    for (up to 0.1 s) so it gets stopped too."""
     global _shutting_down
-    proc, profile = manager._proc, manager._dir
     if _shutting_down:
+        proc = manager._proc
         if proc is not None:
             try:
                 _killpg(proc.pid, signal.SIGKILL)
@@ -281,6 +291,10 @@ def shutdown(signum=None, frame=None) -> None:
         _exit(0)
         return
     _shutting_down = True
+    deadline = time.monotonic() + 0.1
+    while manager._spawning and manager._proc is None and time.monotonic() < deadline:
+        time.sleep(0.005)
+    proc, profile = manager._proc, manager._dir
     if proc is not None:
         _kill_group(proc, 0.15)
     if profile:

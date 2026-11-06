@@ -30,8 +30,12 @@ mcp = MCPServer("hypr-cua", version=__version__)
 
 
 def _json(obj) -> str:
-    """Compact JSON for tool results: no indentation, non-ASCII text kept as is."""
-    return json.dumps(obj, separators=(",", ":"), ensure_ascii=False)
+    """Compact JSON for tool results: no indentation, non-ASCII text kept as is.
+
+    Page text can hold a lone UTF-16 surrogate, which the MCP transport cannot
+    encode, so those are escaped as \\uXXXX (still valid JSON)."""
+    text = json.dumps(obj, separators=(",", ":"), ensure_ascii=False)
+    return text.encode("utf-8", "backslashreplace").decode("utf-8")
 
 
 def _shot_response(shot: capture.Shot):

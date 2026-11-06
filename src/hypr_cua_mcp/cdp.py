@@ -141,9 +141,10 @@ class _Session:
                 return msg
 
     def close(self) -> None:
-        """Close at once: timeout=0 skips websocket-client's 3 s close handshake."""
+        """Drop the socket at once. websocket-client's close() would first send a
+        close frame on the last socket timeout, which can block past the deadline."""
         try:
-            self._ws.close(timeout=0)
+            self._ws.shutdown()
         except Exception:  # noqa: BLE001 - best-effort close
             pass
 
@@ -218,9 +219,13 @@ def _evaluate(sess: _Session, expression: str):
 # Each operation creates its deadline inside manager.use(), so a private Chrome's
 # launch wait does not count against it.
 
+def _use(timeout: float = CMD_TIMEOUT):
+    """The browser for one call; its health probe gets at most the call's timeout."""
+    return browser.manager.use(min(browser.HTTP_TIMEOUT, timeout))
+
 def list_targets() -> dict:
     """The tabs (type == "page") of the browser in use, and which browser that is."""
-    with browser.manager.use() as base:
+    with _use() as base:
         dl = _Deadline(CMD_TIMEOUT)
         tabs = [{"id": t.get("id"), "title": t.get("title"), "url": t.get("url")}
                 for t in _targets_raw(base, dl) if t.get("type") == "page"]
@@ -291,8 +296,9 @@ def _navigate_and_wait(sess: _Session, target: str, url: str, wait_for: str | No
 def open_tab(url: str = "about:blank", wait_for: str | None = None, timeout: float = 30) -> dict:
     """Open a tab, navigate it to `url` and wait like navigate()."""
     url = url or "about:blank"
-    with browser.manager.use() as base:
-        dl = _Deadline(clamp_timeout(timeout))
+    timeout = clamp_timeout(timeout)
+    with _use(timeout) as base:
+        dl = _Deadline(timeout)
         try:
             bs = _browser_session(base, dl)
             try:
@@ -319,8 +325,9 @@ def open_tab(url: str = "about:blank", wait_for: str | None = None, timeout: flo
 def navigate(target: str, url: str, wait_for: str | None = None, timeout: float = 30) -> dict:
     """Navigate a tab and wait for that navigation's load event (and for CSS selector
     `wait_for`). Returns {id, url, title, ready_state, waited_ms, timed_out}."""
-    with browser.manager.use() as base:
-        dl = _Deadline(clamp_timeout(timeout))
+    timeout = clamp_timeout(timeout)
+    with _use(timeout) as base:
+        dl = _Deadline(timeout)
         try:
             sess = _page_session(base, target, dl)
         except CdpTimeout:
@@ -334,8 +341,9 @@ def navigate(target: str, url: str, wait_for: str | None = None, timeout: float 
 def eval_js(target: str, expression: str, timeout: float = 30):
     """Evaluate a JS expression in a tab and return its value. `timeout` (clamped to
     1..300 s) bounds the whole call; a JS throw raises CdpError."""
-    with browser.manager.use() as base:
-        sess = _page_session(base, target, _Deadline(clamp_timeout(timeout)))
+    timeout = clamp_timeout(timeout)
+    with _use(timeout) as base:
+        sess = _page_session(base, target, _Deadline(timeout))
         try:
             return _evaluate(sess, expression)
         except CdpError as exc:
@@ -357,11 +365,11 @@ def read_text(target: str, selector: str | None = None, max_chars: int = 20000) 
         "(function(){var s=" + sel + ";"
         "var el=s?document.querySelector(s):document.body;"
         "if(s&&!el){throw new Error('no element matches selector '+s);}"
-        "var t=el?el.innerText:'';"
-        "return {title:document.title,url:location.href,"
-        "text:t.slice(0," + str(max_chars) + "),chars_total:t.length};})()"
+        "var t=el?el.innerText:'';var c=t.slice(0," + str(max_chars) + ");"
+        "var e=c.charCodeAt(c.length-1);if(e>=0xD800&&e<=0xDBFF){c=c.slice(0,-1);}"
+        "return {title:document.title,url:location.href,text:c,chars_total:t.length};})()"
     )
-    with browser.manager.use() as base:
+    with _use() as base:
         sess = _page_session(base, target, _Deadline(CMD_TIMEOUT))
         try:
             val = _evaluate(sess, expr)
@@ -382,7 +390,7 @@ def click(target: str, selector: str) -> str:
         "el.scrollIntoView({block:'center',inline:'center'});"
         "el.click();return true;})()"
     )
-    with browser.manager.use() as base:
+    with _use() as base:
         sess = _page_session(base, target, _Deadline(CMD_TIMEOUT))
         try:
             _evaluate(sess, expr)
@@ -405,7 +413,7 @@ def type_text(target: str, selector: str, text: str) -> str:
         "el.dispatchEvent(new Event('change',{bubbles:true}));"
         "return true;})()"
     )
-    with browser.manager.use() as base:
+    with _use() as base:
         sess = _page_session(base, target, _Deadline(CMD_TIMEOUT))
         try:
             _evaluate(sess, expr)
@@ -416,7 +424,7 @@ def type_text(target: str, selector: str, text: str) -> str:
 
 def close_tab(target: str) -> str:
     """Close a tab via Target.closeTarget."""
-    with browser.manager.use() as base:
+    with _use() as base:
         sess = _browser_session(base, _Deadline(CMD_TIMEOUT))
         try:
             res = sess.command("Target.closeTarget", {"targetId": target})
@@ -436,7 +444,7 @@ def screenshot(target: str) -> tuple[bytes, dict]:
 
     The scale is divided by window.devicePixelRatio, so a high-DPI browser lands on
     the same budget. Returns (png, {title, url, width, height})."""
-    with browser.manager.use() as base:
+    with _use() as base:
         sess = _page_session(base, target, _Deadline(CMD_TIMEOUT))
         try:
             vp = sess.command("Page.getLayoutMetrics").get("cssVisualViewport") or {}

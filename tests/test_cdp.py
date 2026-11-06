@@ -22,8 +22,12 @@ def _fake_browser(monkeypatch):
     class FakeManager:
         mode = "private"
 
+        def __init__(self):
+            self.probes = []
+
         @contextmanager
-        def use(self):
+        def use(self, probe_timeout=None):
+            self.probes.append(probe_timeout)
             yield BASE
 
     monkeypatch.setattr(browser, "manager", FakeManager())
@@ -65,7 +69,10 @@ class AutoWS:
         return json.dumps(self._q.pop(0))
 
     def close(self, timeout=None):
-        self.closed, self.close_timeout = True, timeout
+        self.close_timeout = timeout
+
+    def shutdown(self):
+        self.closed = True
 
 
 class ScriptWS:
@@ -101,7 +108,7 @@ class ScriptWS:
             raise websocket.WebSocketTimeoutException("timed out")
         return json.dumps(self._q.pop(0))
 
-    def close(self, timeout=None):
+    def shutdown(self):
         pass
 
 
@@ -223,10 +230,11 @@ def test_a_failed_send_is_reported_as_closed():
     assert "connection closed" in str(e.value)
 
 
-def test_close_skips_the_close_handshake():
+def test_close_drops_the_socket_without_sending_a_close_frame():
     ws = AutoWS()
     cdp._Session(ws, cdp._Deadline(5)).close()
-    assert ws.closed and ws.close_timeout == 0
+    assert ws.closed is True
+    assert ws.close_timeout == "unset"  # close() would send a frame on the old timeout
 
 
 def test_clamp_timeout():
@@ -268,6 +276,13 @@ def test_eval_js_uses_the_callers_clamped_timeout(monkeypatch):
     _wire(monkeypatch, ws, [_page("T1")])
     cdp.eval_js("T1", "1", timeout=0)
     assert ws.timeouts and all(t <= 1 for t in ws.timeouts)
+
+
+def test_eval_js_bounds_the_browser_health_probe_by_its_timeout(monkeypatch):
+    ws = AutoWS(result=_eval_result(1))
+    _wire(monkeypatch, ws, [_page("T1")])
+    cdp.eval_js("T1", "1", timeout=2)
+    assert browser.manager.probes[-1] == 2
 
 
 def test_one_deadline_covers_discovery_and_connect(monkeypatch):
@@ -323,6 +338,7 @@ def test_read_text_truncates_inside_the_page(monkeypatch):
     _wire(monkeypatch, ScriptWS(replies={"Runtime.evaluate": _evals(value)}), [_page("T1")])
     out = cdp.read_text("T1", max_chars=5)
     assert ".slice(0,5)" in seen["expr"]
+    assert "0xD800" in seen["expr"]  # a cut never splits a surrogate pair
     assert out == {"title": "T", "url": "http://p/", "text": "abcde",
                    "chars_total": 12, "truncated": True}
 

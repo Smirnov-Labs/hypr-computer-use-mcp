@@ -2,12 +2,15 @@
 the `env` fixture fakes spawning, signals, timers and the idle clock."""
 import os
 import threading
+import time
 import urllib.error
 import urllib.request
 
 import pytest
 
 from hypr_cua_mcp import browser
+
+REAL_SPAWN = browser._spawn  # captured at import, before any fixture replaces it
 
 
 class FakeProc:
@@ -269,6 +272,77 @@ def test_a_signal_during_an_idle_stop_still_reaches_chrome(env, monkeypatch):
     with pytest.raises(Exited):
         env["timers"][-1].fn()
     assert seen[1] == (proc.pid, browser.signal.SIGTERM)
+
+
+def test_no_new_private_chrome_once_shutdown_began(env, monkeypatch):
+    monkeypatch.setattr(browser, "_shutting_down", True)
+    with pytest.raises(browser.CdpError) as e:
+        with env["manager"].use():
+            pass
+    assert "shutting down" in str(e.value)
+    assert env["spawned"] == []
+
+
+def test_shutdown_waits_for_a_chrome_that_is_still_being_spawned(env, monkeypatch):
+    m = env["manager"]
+    monkeypatch.setattr(browser, "manager", m)
+    monkeypatch.setattr(browser, "_shutting_down", False)
+    started, go = threading.Event(), threading.Event()
+    fake_spawn = browser._spawn
+
+    def slow_spawn(argv):  # the child exists, but _proc is not published yet
+        started.set()
+        go.wait(2)
+        return fake_spawn(argv)
+
+    def launch_quietly():
+        try:
+            with m.use():
+                pass
+        except browser.CdpError:
+            pass  # shutdown removed the profile under it, which is the point
+
+    monkeypatch.setattr(browser, "_spawn", slow_spawn)
+    monkeypatch.setattr(browser, "_exit", lambda code: None)
+    worker = threading.Thread(target=launch_quietly)
+    worker.start()
+    assert started.wait(2)
+    stopper = threading.Thread(target=browser.shutdown)
+    stopper.start()
+    time.sleep(0.03)  # shutdown is now waiting for the spawn to publish
+    go.set()
+    stopper.join(2)
+    worker.join(2)
+    _argv, proc = env["spawned"][0]
+    assert env["killed"][0] == (proc.pid, browser.signal.SIGTERM)
+
+
+def test_health_probes_use_the_callers_budget(env, monkeypatch):
+    seen = []
+
+    def http(url, timeout=None):
+        seen.append(timeout)
+        return {"Browser": "Chrome/x"}
+
+    monkeypatch.setattr(browser, "http_get_json", http)
+    m = env["manager"]
+    with m.use(probe_timeout=2):
+        pass
+    with m.use(probe_timeout=2):
+        pass
+    assert len(seen) == 2 and all(t == 2 for t in seen)
+
+
+def test_a_spawn_oserror_becomes_cdperror_and_removes_the_profile(env, monkeypatch, tmp_path):
+    def denied(*a, **k):
+        raise PermissionError("denied")
+
+    monkeypatch.setattr(browser, "_spawn", REAL_SPAWN)
+    monkeypatch.setattr(browser.subprocess, "Popen", denied)
+    with pytest.raises(browser.CdpError):
+        with env["manager"].use():
+            pass
+    assert os.listdir(tmp_path / "hypr-cua") == []
 
 
 def test_install_exit_handlers_hooks_sigint_sigterm_and_atexit(monkeypatch):

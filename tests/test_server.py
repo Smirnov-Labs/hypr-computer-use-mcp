@@ -1,4 +1,6 @@
 """Tests for server tool wiring: focus-verify safety, frame-id contract, errors."""
+import json
+
 import pytest
 
 from hypr_cua_mcp import (
@@ -310,6 +312,17 @@ def test_cdp_screenshot_returns_an_image_and_a_caption_without_frame_id(monkeypa
     img, caption = server.cdp_screenshot("T1")
     assert img.data == b"\x89PNGfake"
     assert "4x3px" in caption and "No frame_id" in caption
+
+
+def test_lone_surrogates_are_escaped_so_the_transport_can_send_them(monkeypatch):
+    import asyncio
+
+    monkeypatch.setattr(cdp, "read_text",
+                        lambda target, selector, max_chars: {"text": "cut \ud83d"})
+    res = asyncio.run(server.mcp.call_tool("cdp_read", {"target": "T1"}))
+    res.model_dump_json()  # raised PydanticSerializationError before the escape
+    assert json.loads(res.content[0].text) == {"text": "cut \ud83d"}
+    assert server._json({"t": "é"}) == '{"t":"é"}'
 
 
 def test_main_installs_exit_handlers_before_serving(monkeypatch):
