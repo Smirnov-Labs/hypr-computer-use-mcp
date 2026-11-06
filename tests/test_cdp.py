@@ -23,11 +23,11 @@ def _fake_browser(monkeypatch):
         mode = "private"
 
         def __init__(self):
-            self.probes = []
+            self.dls = []
 
         @contextmanager
-        def use(self, probe_timeout=None):
-            self.probes.append(probe_timeout)
+        def use(self, dl=None):
+            self.dls.append(dl)
             yield BASE
 
     monkeypatch.setattr(browser, "manager", FakeManager())
@@ -278,11 +278,50 @@ def test_eval_js_uses_the_callers_clamped_timeout(monkeypatch):
     assert ws.timeouts and all(t <= 1 for t in ws.timeouts)
 
 
-def test_eval_js_bounds_the_browser_health_probe_by_its_timeout(monkeypatch):
+def test_eval_js_hands_its_deadline_to_browser_selection(monkeypatch):
     ws = AutoWS(result=_eval_result(1))
     _wire(monkeypatch, ws, [_page("T1")])
     cdp.eval_js("T1", "1", timeout=2)
-    assert browser.manager.probes[-1] == 2
+    assert browser.manager.dls[-1].timeout == 2
+
+
+def test_time_spent_choosing_the_browser_counts_against_the_deadline(monkeypatch):
+    class SlowProbeManager:
+        mode = "automation"
+
+        @contextmanager
+        def use(self, dl=None):
+            dl.at -= 0.9  # the health probe took 0.9 s of a 1 s budget
+            yield BASE
+
+    seen = []
+    router = _router([_page("T1")])
+
+    def http(url, timeout=None):
+        seen.append(timeout)
+        return router(url)
+
+    monkeypatch.setattr(browser, "manager", SlowProbeManager())
+    monkeypatch.setattr(browser, "http_get_json", http)
+    monkeypatch.setattr(cdp, "_ws_connect", lambda url, timeout=None: AutoWS(result=_eval_result(1)))
+    cdp.eval_js("T1", "1", timeout=1)
+    assert seen and seen[0] <= 0.11
+
+
+def test_navigate_reports_timed_out_when_browser_selection_runs_out_of_time(monkeypatch):
+    class SpentManager:
+        mode = None
+
+        @contextmanager
+        def use(self, dl=None):
+            raise browser.CdpTimeout("the health probe ran out of time")
+            yield BASE  # pragma: no cover
+
+    monkeypatch.setattr(browser, "manager", SpentManager())
+    out = cdp.navigate("T1", "https://x", timeout=1)
+    assert out["timed_out"] is True and out["id"] == "T1"
+    out = cdp.open_tab("https://x", timeout=1)
+    assert out["timed_out"] is True and out["id"] is None
 
 
 def test_one_deadline_covers_discovery_and_connect(monkeypatch):
@@ -338,7 +377,7 @@ def test_read_text_truncates_inside_the_page(monkeypatch):
     _wire(monkeypatch, ScriptWS(replies={"Runtime.evaluate": _evals(value)}), [_page("T1")])
     out = cdp.read_text("T1", max_chars=5)
     assert ".slice(0,5)" in seen["expr"]
-    assert "0xD800" in seen["expr"]  # a cut never splits a surrogate pair
+    assert "0xD800" in seen["expr"] and "0xDC00" in seen["expr"]  # only a split pair backs up
     assert out == {"title": "T", "url": "http://p/", "text": "abcde",
                    "chars_total": 12, "truncated": True}
 

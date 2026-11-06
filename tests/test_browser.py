@@ -317,7 +317,18 @@ def test_shutdown_waits_for_a_chrome_that_is_still_being_spawned(env, monkeypatc
     assert env["killed"][0] == (proc.pid, browser.signal.SIGTERM)
 
 
-def test_health_probes_use_the_callers_budget(env, monkeypatch):
+class FakeDeadline:
+    def __init__(self, left):
+        self._left, self.extended = left, 0.0
+
+    def left(self, what):
+        return self._left
+
+    def extend(self, seconds):
+        self.extended += seconds
+
+
+def test_health_probes_get_only_the_deadlines_remaining_time(env, monkeypatch):
     seen = []
 
     def http(url, timeout=None):
@@ -326,11 +337,31 @@ def test_health_probes_use_the_callers_budget(env, monkeypatch):
 
     monkeypatch.setattr(browser, "http_get_json", http)
     m = env["manager"]
-    with m.use(probe_timeout=2):
+    with m.use(FakeDeadline(2)):
         pass
-    with m.use(probe_timeout=2):
+    with m.use(FakeDeadline(2)):
         pass
     assert len(seen) == 2 and all(t == 2 for t in seen)
+
+
+def test_launch_time_is_added_back_to_the_deadline(env):
+    dl = FakeDeadline(5)
+    with env["manager"].use(dl):
+        pass
+    assert env["manager"].mode == "private"
+    assert dl.extended > 0
+
+
+def test_an_exhausted_deadline_stops_browser_selection(env):
+    class Spent(FakeDeadline):
+        def left(self, what):
+            raise browser.CdpTimeout("spent")
+
+    env["automation_up"] = True
+    with pytest.raises(browser.CdpTimeout):
+        with env["manager"].use(Spent(0)):
+            pass
+    assert env["spawned"] == []
 
 
 def test_a_spawn_oserror_becomes_cdperror_and_removes_the_profile(env, monkeypatch, tmp_path):

@@ -158,6 +158,11 @@ def _kill_group(proc, wait: float) -> None:
         pass
 
 
+def _probe_timeout(dl) -> float:
+    """A health probe's timeout: HTTP_TIMEOUT, or less when the call's deadline is closer."""
+    return HTTP_TIMEOUT if dl is None else min(HTTP_TIMEOUT, dl.left("browser probe"))
+
+
 class BrowserManager:
     """Picks the browser for CDP calls and runs the private Chrome's lifecycle."""
 
@@ -173,14 +178,22 @@ class BrowserManager:
         self._spawning = False         # a launch is between spawn and publishing _proc
 
     @contextmanager
-    def use(self, probe_timeout: float = HTTP_TIMEOUT):
+    def use(self, dl=None):
         """Yield the base URL for one CDP call; the idle stop waits while it runs.
-        Health probes of the automation Chrome get at most `probe_timeout` seconds."""
+
+        `dl` is the call's deadline (left(what) -> seconds, raising CdpTimeout when
+        none remain; extend(seconds)). Health probes get only its remaining time.
+        Waiting for the lock and stopping or launching a private Chrome are added
+        back to it, because the spec excludes the launch from the call's budget."""
+        t0 = time.monotonic()
         with self._lock:
-            if not self._healthy(probe_timeout):
-                self._choose(probe_timeout)
+            excluded = time.monotonic() - t0
+            if not self._healthy(dl):
+                excluded += self._choose(dl)
             self._active += 1
             base = self.base
+        if dl is not None:
+            dl.extend(excluded)
         try:
             yield base
         finally:
@@ -190,35 +203,41 @@ class BrowserManager:
                 if self.mode == "private":
                     self._arm_idle_timer()
 
-    def _healthy(self, probe_timeout: float) -> bool:
+    def _healthy(self, dl) -> bool:
         if self.mode == "private":
             return self._proc is not None and self._proc.poll() is None
         if self.mode == "automation":
-            return reachable(self.base, probe_timeout)
+            return reachable(self.base, _probe_timeout(dl))
         return False
 
-    def _choose(self, probe_timeout: float) -> None:
+    def _choose(self, dl) -> float:
+        """Pick the browser. Returns the seconds spent stopping or launching a private
+        Chrome, which the caller's deadline does not count."""
+        t0 = time.monotonic()
         self._stop_private(wait=2.0)  # clears a dead private Chrome's leftovers
+        excluded = time.monotonic() - t0
         self.mode = self.base = None
         base = automation_endpoint()
-        if reachable(base, probe_timeout):
+        if reachable(base, _probe_timeout(dl)):
             self.mode, self.base = "automation", base
-            return
+            return excluded
         if not _autolaunch_enabled():
             raise CdpError(
                 f"No Chrome DevTools endpoint at {base}, and HYPR_CUA_CDP_AUTOLAUNCH=0. "
                 "Start the automation Chrome with bin/hypr-cua-chrome, or unset the "
                 "variable so hypr-cua starts a private headless Chrome."
             )
+        t1 = time.monotonic()
         self._launch_private()
+        return excluded + (time.monotonic() - t1)
 
     def _launch_private(self) -> None:
         if _shutting_down:
             raise CdpError("hypr-cua is shutting down; not starting a private Chrome")
-        binary = find_chrome()
-        profile = _new_profile_dir()
         self._spawning = True  # shutdown() waits briefly for _proc while this is set
         try:
+            binary = find_chrome()
+            profile = _new_profile_dir()
             try:
                 proc = _spawn([
                     binary, "--headless=new", "--remote-debugging-port=0",
