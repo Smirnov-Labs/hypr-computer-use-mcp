@@ -1,6 +1,9 @@
 """Tests for coords: coordinate mapping + the capture-frame store."""
+import contextvars
+
 import pytest
 
+from hypr_cua_mcp import coords
 from hypr_cua_mcp.coords import CaptureFrame, FrameStore, NoActiveCapture, StaleFrame
 
 
@@ -54,3 +57,43 @@ def test_resolve_returns_frame_for_matching_id_or_none():
     fid = store.set_last(f)
     assert store.resolve(fid) is f
     assert store.resolve(None) is f  # None means "use the last capture"
+
+
+def _in_session(key, fn):
+    """Run fn with session_key set to key, in a fresh copy of the context."""
+    def run():
+        coords.session_key.set(key)
+        return fn()
+    return contextvars.copy_context().run(run)
+
+
+def test_each_session_resolves_only_its_own_frame():
+    store = FrameStore()
+    a, b = object(), object()
+    fid_a = _in_session(a, lambda: store.set_last(_frame(label="a")))
+    fid_b = _in_session(b, lambda: store.set_last(_frame(label="b")))
+    assert _in_session(a, lambda: store.resolve(fid_a)).label == "a"
+    assert _in_session(b, lambda: store.resolve(None)).label == "b"
+    with pytest.raises(StaleFrame):
+        _in_session(a, lambda: store.resolve(fid_b))
+
+
+def test_frame_ids_carry_a_random_per_process_prefix():
+    one, two = FrameStore().set_last(_frame()), FrameStore().set_last(_frame())
+    assert one.startswith("cap-") and len(one.split("-")[1]) == 8
+    assert one.split("-")[1] != two.split("-")[1]
+
+
+def test_dropping_a_session_forgets_its_frame():
+    store = FrameStore()
+    key = object()
+    _in_session(key, lambda: store.set_last(_frame()))
+    store.drop(key)
+    with pytest.raises(NoActiveCapture):
+        _in_session(key, lambda: store.resolve(None))
+
+
+def test_a_required_session_must_be_set(monkeypatch):
+    monkeypatch.setattr(coords, "require_session", True)
+    with pytest.raises(RuntimeError):
+        FrameStore().set_last(_frame())
