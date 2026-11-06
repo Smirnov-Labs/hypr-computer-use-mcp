@@ -24,7 +24,7 @@ import sys
 
 from mcp.server.mcpserver import MCPServer, Image
 
-from . import __version__, capture, cdp, clipboard, coords, hyprcontrol, hyprtree, inputs, taskrunner, tmux
+from . import __version__, browser, capture, cdp, clipboard, coords, hyprcontrol, hyprtree, inputs, taskrunner, tmux
 
 mcp = MCPServer("hypr-cua", version=__version__)
 
@@ -305,9 +305,11 @@ def tmux_kill(target: str) -> str:
 
 @mcp.tool(structured_output=False)
 def cdp_targets() -> str:
-    """List drivable Chrome tabs (id, title, url) in the copilot browser. Starts a
-    DEDICATED Chrome (isolated profile, debugging port) on first use if none is up —
-    it never touches your main Chrome. Use a tab's `id` with the other cdp_* tools."""
+    """List the copilot browser's tabs as JSON {browser, tabs: [{id, title, url}]}.
+    `browser` is "automation" (the Chrome on port 9222) or "private" (a headless
+    Chrome hypr-cua started because nothing answered on 9222; it stops after 10
+    idle minutes, and its tabs and cookies go with it). Use a tab's `id` with the
+    other cdp_* tools."""
     return _json(cdp.list_targets())
 
 
@@ -324,10 +326,11 @@ def cdp_navigate(target: str, url: str) -> str:
 
 
 @mcp.tool(structured_output=False)
-def cdp_eval(target: str, expression: str) -> str:
-    """Evaluate a JavaScript expression in a tab (by id) and return its value as
-    JSON. A thrown JS exception is surfaced as an error, not swallowed."""
-    return _json(cdp.eval_js(target, expression))
+def cdp_eval(target: str, expression: str, timeout: float = 30) -> str:
+    """Evaluate a JavaScript expression in a tab and return its value as JSON.
+    Promises are awaited. `timeout` (1 to 300 s) bounds the whole call. A thrown JS
+    exception is an error."""
+    return _json(cdp.eval_js(target, expression, timeout=timeout))
 
 
 @mcp.tool(structured_output=False)
@@ -471,6 +474,7 @@ def selftest() -> int:
 def main() -> None:
     if "--selftest" in sys.argv:
         raise SystemExit(selftest())
+    browser.install_exit_handlers()  # stop a private Chrome on SIGINT/SIGTERM/exit
     mcp.run()  # stdio transport
 
 

@@ -2,7 +2,7 @@
 import pytest
 
 from hypr_cua_mcp import (
-    cdp, clipboard, coords, hyprcontrol, hyprtree, inputs, server, taskrunner, tmux,
+    browser, cdp, clipboard, coords, hyprcontrol, hyprtree, inputs, server, taskrunner, tmux,
 )
 
 
@@ -175,17 +175,18 @@ def test_tmux_list_delegates(monkeypatch):
 # --- CDP browser wiring (delegate; type muzzles the value) ---
 
 def test_cdp_targets_delegates_and_serializes(monkeypatch):
-    monkeypatch.setattr(cdp, "list_targets", lambda: [{"id": "T1", "url": "http://a"}])
+    monkeypatch.setattr(cdp, "list_targets",
+                        lambda: {"browser": "private", "tabs": [{"id": "T1", "url": "http://a"}]})
     out = server.cdp_targets()
-    assert "T1" in out and "http://a" in out
+    assert '"browser":"private"' in out and "T1" in out
 
 
-def test_cdp_eval_delegates_and_json_encodes(monkeypatch):
+def test_cdp_eval_delegates_with_timeout_and_json_encodes(monkeypatch):
     seen = {}
     monkeypatch.setattr(cdp, "eval_js",
-                        lambda t, e: seen.update(t=t, e=e) or {"n": 7})
-    out = server.cdp_eval("T1", "({n:7})")
-    assert seen == {"t": "T1", "e": "({n:7})"}
+                        lambda t, e, timeout: seen.update(t=t, e=e, timeout=timeout) or {"n": 7})
+    out = server.cdp_eval("T1", "({n:7})", timeout=5)
+    assert seen == {"t": "T1", "e": "({n:7})", "timeout": 5}
     assert out == '{"n":7}'
 
 
@@ -287,3 +288,12 @@ def test_text_tool_result_is_compact_plain_text(monkeypatch):
     res = asyncio.run(server.mcp.call_tool("tmux_list", {}))
     assert res.structured_content is None
     assert res.content[0].text == '[{"session":"w","size":"80x24"}]'
+
+
+def test_main_installs_exit_handlers_before_serving(monkeypatch):
+    order = []
+    monkeypatch.setattr(server.sys, "argv", ["hypr-cua-mcp"])
+    monkeypatch.setattr(browser, "install_exit_handlers", lambda: order.append("handlers"))
+    monkeypatch.setattr(server.mcp, "run", lambda: order.append("run"))
+    server.main()
+    assert order == ["handlers", "run"]
