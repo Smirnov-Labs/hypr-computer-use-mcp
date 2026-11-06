@@ -189,7 +189,7 @@ uvx hypr-cua-mcp --selftest
 
 By default each MCP client session starts its own hypr-cua. From a checkout you can
 run one shared server per desktop login instead. A session then connects in
-milliseconds and costs about 12 MB instead of about 94 MB. `bin/hypr-cua-mcp`
+about 20 ms and costs about 17 MB instead of about 94 MB. `bin/hypr-cua-mcp`
 connects to the shared server when it runs. When it doesn't, the wrapper starts a
 stdio server for the session, so the registration stays the same.
 
