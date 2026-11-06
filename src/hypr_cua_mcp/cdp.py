@@ -342,21 +342,31 @@ def eval_js(target: str, expression: str, timeout: float = 30):
             sess.close()
 
 
-def read_text(target: str) -> dict:
-    """A tab's {title, url, text}, where text is document.body.innerText."""
+def read_text(target: str, selector: str | None = None, max_chars: int = 20000) -> dict:
+    """Visible text of the page, or of the first element matching `selector`.
+
+    The page itself cuts the text to max_chars, so at most that much crosses CDP.
+    Returns {title, url, text, chars_total, truncated}."""
+    max_chars = max(1, int(max_chars))
+    sel = json.dumps(selector) if selector else "null"
+    expr = (
+        "(function(){var s=" + sel + ";"
+        "var el=s?document.querySelector(s):document.body;"
+        "if(s&&!el){throw new Error('no element matches selector '+s);}"
+        "var t=el?el.innerText:'';"
+        "return {title:document.title,url:location.href,"
+        "text:t.slice(0," + str(max_chars) + "),chars_total:t.length};})()"
+    )
     with browser.manager.use() as base:
         sess = _page_session(base, target, _Deadline(CMD_TIMEOUT))
         try:
-            val = _evaluate(
-                sess,
-                "({title: document.title, url: location.href,"
-                " text: (document.body ? document.body.innerText : '')})",
-            )
+            val = _evaluate(sess, expr)
         finally:
             sess.close()
-    if isinstance(val, dict):
-        return {"title": val.get("title"), "url": val.get("url"), "text": val.get("text")}
-    return {"title": None, "url": None, "text": val}
+    val = val if isinstance(val, dict) else {}
+    total = int(val.get("chars_total") or 0)
+    return {"title": val.get("title"), "url": val.get("url"), "text": val.get("text") or "",
+            "chars_total": total, "truncated": total > max_chars}
 
 
 def click(target: str, selector: str) -> str:

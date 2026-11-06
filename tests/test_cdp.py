@@ -310,11 +310,41 @@ def test_unknown_target_raises_before_connecting(monkeypatch):
 
 # --- read / click / type / navigate / open / close ----------------------------
 
-def test_read_text_returns_title_url_text(monkeypatch):
-    payload = {"title": "Hello", "url": "http://p/", "text": "body innertext here"}
-    ws = AutoWS(result=_eval_result(payload))
-    _wire(monkeypatch, ws, [_page("T1")])
-    assert cdp.read_text("T1") == payload
+def test_read_text_truncates_inside_the_page(monkeypatch):
+    seen = {}
+
+    def value(expr):
+        seen["expr"] = expr
+        return {"title": "T", "url": "http://p/", "text": "abcde", "chars_total": 12}
+
+    _wire(monkeypatch, ScriptWS(replies={"Runtime.evaluate": _evals(value)}), [_page("T1")])
+    out = cdp.read_text("T1", max_chars=5)
+    assert ".slice(0,5)" in seen["expr"]
+    assert out == {"title": "T", "url": "http://p/", "text": "abcde",
+                   "chars_total": 12, "truncated": True}
+
+
+def test_read_text_reads_the_selected_element(monkeypatch):
+    seen = {}
+
+    def value(expr):
+        seen["expr"] = expr
+        return {"title": "", "url": "", "text": "hi", "chars_total": 2}
+
+    _wire(monkeypatch, ScriptWS(replies={"Runtime.evaluate": _evals(value)}), [_page("T1")])
+    out = cdp.read_text("T1", selector="#main")
+    assert '"#main"' in seen["expr"]
+    assert out["text"] == "hi" and out["truncated"] is False
+
+
+def test_read_text_with_a_selector_that_matches_nothing_raises(monkeypatch):
+    reply = {"result": {"type": "object"},
+             "exceptionDetails": {"text": "Uncaught",
+                                  "exception": {"description": "Error: no element matches selector #nope"}}}
+    _wire(monkeypatch, ScriptWS(replies={"Runtime.evaluate": reply}), [_page("T1")])
+    with pytest.raises(cdp.CdpError) as e:
+        cdp.read_text("T1", selector="#nope")
+    assert "no element matches" in str(e.value)
 
 
 def test_click_builds_queryselector_click(monkeypatch):

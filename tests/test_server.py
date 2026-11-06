@@ -294,6 +294,15 @@ def test_text_tool_result_is_compact_plain_text(monkeypatch):
     assert res.content[0].text == '[{"session":"w","size":"80x24"}]'
 
 
+def test_cdp_read_passes_selector_and_max_chars(monkeypatch):
+    seen = {}
+    monkeypatch.setattr(cdp, "read_text",
+                        lambda target, selector, max_chars: seen.update(a=(target, selector, max_chars))
+                        or {"text": "x", "truncated": False})
+    assert '"text":"x"' in server.cdp_read("T1", selector="main", max_chars=100)
+    assert seen == {"a": ("T1", "main", 100)}
+
+
 def test_main_installs_exit_handlers_before_serving(monkeypatch):
     order = []
     monkeypatch.setattr(server.sys, "argv", ["hypr-cua-mcp"])

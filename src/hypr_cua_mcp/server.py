@@ -338,10 +338,11 @@ def cdp_eval(target: str, expression: str, timeout: float = 30) -> str:
 
 
 @mcp.tool(structured_output=False)
-def cdp_read(target: str) -> str:
-    """Read a tab's visible text (document.body.innerText) plus its title and url,
-    as JSON {title, url, text} — a focus-free way to see page content."""
-    return _json(cdp.read_text(target))
+def cdp_read(target: str, selector: str | None = None, max_chars: int = 20000) -> str:
+    """Read the visible text (innerText) of a tab, or of the first element matching
+    CSS `selector`, as JSON {title, url, text, chars_total, truncated}. The text is
+    cut to max_chars inside the page."""
+    return _json(cdp.read_text(target, selector=selector, max_chars=max_chars))
 
 
 @mcp.tool(structured_output=False)
