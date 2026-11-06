@@ -526,6 +526,9 @@ def selftest() -> int:
 def main() -> None:
     if "--selftest" in sys.argv:
         raise SystemExit(selftest())
+    if "--serve" in sys.argv:
+        from . import serve
+        raise SystemExit(serve.main())
     browser.install_exit_handlers()  # stop a private Chrome on SIGINT/SIGTERM/exit
     mcp.run()  # stdio transport
 

@@ -336,6 +336,17 @@ def test_main_installs_exit_handlers_before_serving(monkeypatch):
     assert order == ["handlers", "run"]
 
 
+def test_main_dispatches_serve_mode(monkeypatch):
+    from hypr_cua_mcp import serve
+
+    monkeypatch.setattr(server.sys, "argv", ["hypr-cua-mcp", "--serve"])
+    monkeypatch.setattr(serve, "main", lambda: 0)
+    monkeypatch.setattr(server.mcp, "run", lambda: pytest.fail("serve mode must not run stdio"))
+    with pytest.raises(SystemExit) as e:
+        server.main()
+    assert e.value.code == 0
+
+
 # --- one desktop lock across sessions ---
 
 def test_desktop_tools_run_one_at_a_time(monkeypatch):
