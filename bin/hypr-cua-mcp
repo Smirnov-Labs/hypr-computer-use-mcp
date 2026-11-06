@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
-# Entry point for Claude Code MCP registration.
+# Entry point for MCP clients (Claude Code, Codex, ...).
 #
-# Runs in the current Wayland/Hyprland session (WAYLAND_DISPLAY and
-# HYPRLAND_INSTANCE_SIGNATURE are inherited from the environment). There is no
-# sandbox on Wayland: this DRIVES YOUR REAL DESKTOP. Supervise live runs.
+# With the shared per-login service running (contrib/systemd), this connects the
+# client to it through a small stdlib connector. Otherwise it runs a stdio server
+# for this session. Either way it DRIVES YOUR REAL DESKTOP. Supervise live runs.
 set -euo pipefail
 
 HERE="$(cd "$(dirname "$0")/.." && pwd)"
-
-exec uv run --directory "$HERE" hypr-cua-mcp
+[ -x "$HERE/.venv/bin/python" ] || uv sync --directory "$HERE" --quiet
+exec "$HERE/.venv/bin/python" -I -m hypr_cua_mcp.connect

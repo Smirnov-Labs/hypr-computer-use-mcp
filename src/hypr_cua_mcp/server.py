@@ -18,9 +18,11 @@ Hyprland addresses ("0x...") from list_windows.
 """
 from __future__ import annotations
 
+import functools
 import json
 import os
 import sys
+import threading
 
 from mcp.server.mcpserver import MCPServer, Image
 
@@ -36,6 +38,19 @@ def _json(obj) -> str:
     encode, so those are escaped as \\uXXXX (still valid JSON)."""
     text = json.dumps(obj, separators=(",", ":"), ensure_ascii=False)
     return text.encode("utf-8", "backslashreplace").decode("utf-8")
+
+
+_DESKTOP = threading.RLock()
+
+
+def _desktop_action(fn):
+    """Run a tool that acts on the desktop under one process-wide lock, so two
+    sessions' focus-then-type or clicks can't interleave. Read-only tools skip it."""
+    @functools.wraps(fn)
+    def wrapper(*args, **kwargs):
+        with _DESKTOP:
+            return fn(*args, **kwargs)
+    return wrapper
 
 
 def _shot_response(shot: capture.Shot):
@@ -119,6 +134,7 @@ def screenshot_window(con_id: str):
 # --- pointer (coordinates are in the named screenshot's pixel space) ---------
 
 @mcp.tool(structured_output=False)
+@_desktop_action
 def click(x: float, y: float, button: str = "left", frame_id: str | None = None) -> str:
     """Click at (x,y) in the pixels of screenshot `frame_id` (default: the last
     screenshot). button: left|middle|right. Errors if no screenshot exists yet or
@@ -131,6 +147,7 @@ def click(x: float, y: float, button: str = "left", frame_id: str | None = None)
 
 
 @mcp.tool(structured_output=False)
+@_desktop_action
 def double_click(x: float, y: float, button: str = "left", frame_id: str | None = None) -> str:
     """Double-click at (x,y) in screenshot `frame_id`'s pixel space."""
     frame = coords.frames.resolve(frame_id)
@@ -141,6 +158,7 @@ def double_click(x: float, y: float, button: str = "left", frame_id: str | None 
 
 
 @mcp.tool(structured_output=False)
+@_desktop_action
 def move_mouse(x: float, y: float, frame_id: str | None = None, follow: bool = False) -> str:
     """Move the pointer to (x,y) in screenshot `frame_id`'s pixel space.
 
@@ -167,6 +185,7 @@ def move_mouse(x: float, y: float, frame_id: str | None = None, follow: bool = F
 
 
 @mcp.tool(structured_output=False)
+@_desktop_action
 def drag(x1: float, y1: float, x2: float, y2: float, button: str = "left",
          frame_id: str | None = None) -> str:
     """Drag from (x1,y1) to (x2,y2), coords in screenshot `frame_id`'s pixel space."""
@@ -179,6 +198,7 @@ def drag(x1: float, y1: float, x2: float, y2: float, button: str = "left",
 
 
 @mcp.tool(structured_output=False)
+@_desktop_action
 def scroll(x: float, y: float, direction: str = "down", amount: int = 3,
            frame_id: str | None = None) -> str:
     """Scroll at (x,y) (screenshot `frame_id` pixel space). direction: up|down."""
@@ -203,6 +223,7 @@ def _focus_or_raise(con_id: str) -> None:
 
 
 @mcp.tool(structured_output=False)
+@_desktop_action
 def focus_window(con_id: str) -> str:
     """Give keyboard focus to a window (by address). Raises if focus can't land."""
     _focus_or_raise(con_id)
@@ -210,6 +231,7 @@ def focus_window(con_id: str) -> str:
 
 
 @mcp.tool(structured_output=False)
+@_desktop_action
 def type_text(text: str, con_id: str | None = None) -> str:
     """Type text into the focused window. If con_id (address) is given, focus it
     first and fail (no keystrokes sent) if that focus can't be verified.
@@ -225,6 +247,7 @@ def type_text(text: str, con_id: str | None = None) -> str:
 
 
 @mcp.tool(structured_output=False)
+@_desktop_action
 def key(keys: str, con_id: str | None = None) -> str:
     """Press a key/chord (e.g. 'ctrl+s', 'Return', 'alt+Tab'). If con_id (address)
     is given, focus it first and fail if that focus can't be verified."""
@@ -429,6 +452,7 @@ def task_stop(name: str) -> str:
 # --- Hyprland control (workspace / float / launch / layout) -----------------
 
 @mcp.tool(structured_output=False)
+@_desktop_action
 def launch(command: str) -> str:
     """Launch an app via Hyprland's exec dispatcher. Opens on the current
     workspace — pair with goto_workspace or move_window_to_workspace to place it."""
@@ -437,6 +461,7 @@ def launch(command: str) -> str:
 
 
 @mcp.tool(structured_output=False)
+@_desktop_action
 def goto_workspace(workspace: str) -> str:
     """Switch the focused monitor to a workspace (created if absent). Numeric names
     match by number; other names are matched literally."""
@@ -444,18 +469,21 @@ def goto_workspace(workspace: str) -> str:
 
 
 @mcp.tool(structured_output=False)
+@_desktop_action
 def move_window_to_workspace(con_id: str, workspace: str) -> str:
     """Move a window (by address) to a workspace without following it."""
     return hyprcontrol.move_window_to_workspace(con_id, workspace)
 
 
 @mcp.tool(structured_output=False)
+@_desktop_action
 def set_floating(con_id: str, enable: bool = True) -> str:
     """Enable/disable floating for a window (by address)."""
     return hyprcontrol.set_floating(con_id, enable)
 
 
 @mcp.tool(structured_output=False)
+@_desktop_action
 def layout_message(message: str) -> str:
     """Send a message to the active layout engine (dwindle/master), e.g.
     'togglesplit', 'swapsplit', 'orientationnext'. (Hyprland has no per-window
@@ -464,6 +492,7 @@ def layout_message(message: str) -> str:
 
 
 @mcp.tool(structured_output=False)
+@_desktop_action
 def run_dispatch(dsp_expr: str) -> str:
     """Escape hatch: run a raw Hyprland dispatcher as the Lua expression passed to
     hl.dispatch(...), e.g. 'hl.dsp.window.fullscreen({})' or 'hl.dsp.window.move({ direction = "l" })'.
@@ -497,6 +526,9 @@ def selftest() -> int:
 def main() -> None:
     if "--selftest" in sys.argv:
         raise SystemExit(selftest())
+    if "--serve" in sys.argv:
+        from . import serve
+        raise SystemExit(serve.main())
     browser.install_exit_handlers()  # stop a private Chrome on SIGINT/SIGTERM/exit
     mcp.run()  # stdio transport
 

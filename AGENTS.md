@@ -13,10 +13,12 @@ it (a self-owned `uinput` device). Python, `uv`-managed, stdio transport.
 uv sync                            # install deps into .venv (first launch also does this)
 uv run hypr-cua-mcp                # start the stdio server (normally the MCP client launches it)
 uv run hypr-cua-mcp --selftest     # read-only smoke test: tree + outputs + one capture + mouse (no clicks)
+uv run hypr-cua-mcp --serve        # the shared per-login server; needs systemd socket activation (contrib/systemd)
 ```
 
 Entry point is `hypr_cua_mcp.server:main` (`pyproject.toml`); `bin/hypr-cua-mcp` is the
-wrapper an MCP client registers. System CLI deps (`grim`, `wl-clipboard`, `hyprctl`,
+wrapper an MCP client registers. It runs `connect.py`, which joins the shared server's
+socket or execs the stdio server when nothing answers. System CLI deps (`grim`, `wl-clipboard`, `hyprctl`,
 optional `tmux` / Chromium) are listed in the README's install table.
 
 ## Tests
@@ -40,8 +42,10 @@ lessons in [`docs/gotchas.md`](docs/gotchas.md). The short version:
 | File | Responsibility |
 |------|----------------|
 | `server.py` | MCP layer (`MCPServer`), tool defs, the `[Image, caption]` response shape, `--selftest` |
+| `serve.py` | `--serve`: one MCP session per connection on the systemd-activated socket |
+| `connect.py` | stdlib connector behind `bin/hypr-cua-mcp`: socket to stdio, stdio fallback, reconnect |
 | `capture.py` | `grim` whole-layout grab → Pillow crop → downscale to the vision-API budget |
-| `coords.py` | screenshot-pixel ↔ global-pixel mapping; the `frame_id` store |
+| `coords.py` | screenshot-pixel ↔ global-pixel mapping; the per-session `frame_id` store |
 | `hyprtree.py` | read-only `hyprctl -j` (windows / outputs) |
 | `hyprcontrol.py` | mutations via `hyprctl eval 'hl.dispatch(hl.dsp.…)'` (focus / workspace / float / launch) |
 | `inputs.py` | input synthesis via a self-owned `evdev.UInput` (abs pointer + wheel + keyboard) |
@@ -73,6 +77,13 @@ lessons in [`docs/gotchas.md`](docs/gotchas.md). The short version:
 - **No sandbox.** This drives the real desktop with real input events; there is no
   Wayland equivalent of Xephyr. Assume any change can move the user's mouse/keyboard.
   Supervise live runs.
+- **Desktop-acting tools take `@_desktop_action`.** One process-wide lock keeps two
+  sessions' focus-then-type and clicks from interleaving in the shared server. Put it
+  under `@mcp.tool(...)` on any new tool that sends input or moves focus. Read-only
+  tools don't take it.
+- **Per-session state is keyed by `coords.session_key`.** The shared server sets it
+  per connection before the transport starts. Module-level "last thing" state that
+  one session can overwrite for another is a bug.
 
 ## Commits & PRs
 

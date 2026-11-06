@@ -13,11 +13,13 @@ X11 backends swapped for Wayland ones; `coords.py`,
 | File | Responsibility |
 |------|----------------|
 | `server.py` | MCP layer (mcp 2.0 `MCPServer`), tool definitions, the `[Image, caption]` response shape, `--selftest` |
+| `serve.py` | `--serve`: one MCP session per connection on the systemd-activated socket |
+| `connect.py` | stdlib connector behind `bin/hypr-cua-mcp`: socket to stdio, stdio fallback, reconnect |
 | `capture.py` | Screenshot pipeline: `grim` whole-layout grab → Pillow crop → downscale to the vision-API budget |
 | `hyprtree.py` | Read-only `hyprctl -j` (clients/monitors) → `list_windows`, `get_outputs`, `find_window` |
 | `hyprcontrol.py` | Mutations via `hyprctl eval 'hl.dispatch(hl.dsp.…)'` (focus / workspace / float / launch / layout) |
 | `inputs.py` | Input synthesis via a self-owned `evdev.UInput` device (abs pointer + wheel + keyboard) |
-| `coords.py` | The mapping between screenshot pixels and global layout pixels; stores the last capture's frame |
+| `coords.py` | The mapping between screenshot pixels and global layout pixels; stores each session's last capture frame |
 | `clipboard.py` | `wl-clipboard` read / write |
 | `tmux.py` / `taskrunner.py` | Hidden-tmux terminal + task channels on an isolated socket (no window, no focus) |
 | `browser.py` | which Chrome the CDP channel drives; the private headless Chrome's launch, idle stop and exit |
@@ -66,7 +68,7 @@ scaled monitors is still open — see [`KNOWN-ISSUES.md`](../KNOWN-ISSUES.md).)
 `inputs.py` creates one `evdev.UInput` (abs X/Y + buttons + wheel + US-ASCII
 keyboard, `INPUT_PROP_POINTER`) that the server process owns for its lifetime.
 Global pixels map to the device's abs axes by `abs = pixel * 65535 / layout_extent`
-(extent from `hyprctl monitors`; the compositor maps `[0,65535]` onto the layout,
+(extent from `hyprctl monitors`, read on every pointer action; the compositor maps `[0,65535]` onto the layout,
 verified ~1px). Buttons/wheel/keys emit directly. Because these are *real* input
 events, they reset the compositor idle timer — no synthetic-input self-lock, no
 `ydotoold` daemon. See `docs/gotchas.md` for why ydotool (2× abs coords, no
@@ -88,6 +90,30 @@ hatch that blocks `exit`.
 - Wire objects are snake_case (`server_info`, `is_error`, `mime_type`).
 - Image-returning tools use `@mcp.tool(structured_output=False)` and return
   `[Image(...), caption_str]`, which serializes to an `image` + `text` pair.
+
+## One server per login
+
+`bin/hypr-cua-mcp` runs `connect.py`, a connector that uses only the standard
+library. It connects to `$XDG_RUNTIME_DIR/hypr-cua/mcp.sock` and copies
+newline-framed JSON-RPC between the client's stdio and the socket. If nothing
+answers, it execs the stdio server, so every client gets hypr-cua either way.
+
+systemd listens on that socket (`contrib/systemd/hypr-cua.socket`) and starts
+`hypr-cua-mcp --serve` on the first connection. `serve.py` checks the socket it was
+handed, then runs one MCP session per connection with the same `MCPServer` as stdio
+mode. Socket I/O is async, so idle sessions hold no threads. Tool calls run in anyio
+worker threads, as in stdio mode.
+
+| State | Scope |
+|---|---|
+| Screenshot frames (`coords.FrameStore`) | Per session, keyed by the `session_key` contextvar. Ids carry a random per-process prefix. |
+| uinput device, browser, tmux socket | Shared |
+| Desktop actions | Serialized by one lock (`server._desktop_action`) |
+
+When the service restarts, the connector answers each request still waiting with
+error -32000 ("the operation may have completed"). It reconnects on the next request
+and never replays one. A client that used the legacy `initialize` handshake can't
+continue on a new connection, so for it the connector exits.
 
 ## Scope
 

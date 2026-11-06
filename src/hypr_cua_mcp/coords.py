@@ -12,7 +12,9 @@ and the store rejects a stale one instead of silently resolving against
 """
 from __future__ import annotations
 
+import contextvars
 import itertools
+import secrets
 from dataclasses import dataclass
 from threading import Lock
 
@@ -27,6 +29,12 @@ class NoActiveCapture(CaptureFrameError):
 
 class StaleFrame(CaptureFrameError):
     """A pointer tool named a frame id that is no longer the current one."""
+
+
+# Which MCP session a tool call belongs to. The shared service sets it per
+# connection; stdio mode leaves it None (one implicit session).
+session_key: contextvars.ContextVar = contextvars.ContextVar("hypr_cua_session_key", default=None)
+require_session = False  # the shared service sets this: a frame call outside a session is a bug
 
 
 @dataclass(frozen=True)
@@ -72,43 +80,53 @@ class CaptureFrame:
 
 
 class FrameStore:
-    """Holds the most recent capture and hands out/validates opaque frame ids."""
+    """Holds each session's most recent capture and hands out / validates frame ids.
+
+    Ids carry a random per-process prefix (cap-<8 hex>-<n>), so an id from another
+    session, or from before a restart, never matches. The session comes from the
+    `session_key` contextvar."""
 
     def __init__(self) -> None:
         self._lock = Lock()
+        self._prefix = secrets.token_hex(4)
         self._counter = itertools.count(1)
-        self._last_id: str | None = None
-        self._last_frame: CaptureFrame | None = None
+        self._last: dict = {}  # session key -> (frame id, frame)
+
+    def _key(self):
+        key = session_key.get()
+        if key is None and require_session:
+            raise RuntimeError("frame store used outside an MCP session (session_key unset)")
+        return key
 
     def set_last(self, frame: CaptureFrame) -> str:
-        """Store ``frame`` as the current capture and return its new opaque id."""
+        """Store `frame` as this session's current capture and return its new id."""
+        key = self._key()
         with self._lock:
-            self._last_id = f"cap-{next(self._counter)}"
-            self._last_frame = frame
-            return self._last_id
-
-    def get_last(self) -> tuple[str | None, CaptureFrame | None]:
-        with self._lock:
-            return self._last_id, self._last_frame
+            frame_id = f"cap-{self._prefix}-{next(self._counter)}"
+            self._last[key] = (frame_id, frame)
+            return frame_id
 
     def resolve(self, frame_id: str | None = None) -> CaptureFrame:
-        """Return the frame for ``frame_id``.
+        """This session's frame for `frame_id`; None means its latest capture.
 
-        ``frame_id=None`` means "use the last capture". Raises ``NoActiveCapture``
-        if nothing has been captured yet, or ``StaleFrame`` if a specific id was
-        given that is no longer current.
-        """
+        Raises NoActiveCapture if this session has no capture yet, or StaleFrame if
+        the id is not this session's current one."""
+        key = self._key()
         with self._lock:
-            if self._last_frame is None:
-                raise NoActiveCapture(
-                    "no screenshot has been taken yet — call screenshot first"
-                )
-            if frame_id is not None and frame_id != self._last_id:
+            last = self._last.get(key)
+            if last is None:
+                raise NoActiveCapture("no screenshot has been taken yet; call screenshot first")
+            if frame_id is not None and frame_id != last[0]:
                 raise StaleFrame(
-                    f"frame {frame_id!r} is stale (current is {self._last_id!r}); "
+                    f"frame {frame_id!r} is stale (current is {last[0]!r}); "
                     "take a fresh screenshot before acting on it"
                 )
-            return self._last_frame
+            return last[1]
+
+    def drop(self, key) -> None:
+        """Forget a session's capture (its connection ended)."""
+        with self._lock:
+            self._last.pop(key, None)
 
 
 # Process-wide default store used by the MCP server.

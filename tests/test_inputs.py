@@ -22,7 +22,7 @@ class FakeUI:
 def ui(monkeypatch):
     fake = FakeUI()
     monkeypatch.setattr(inputs, "_device", lambda: fake)
-    monkeypatch.setattr(inputs, "_extent", (7680, 2880))
+    monkeypatch.setattr(inputs, "_layout_extent", lambda: (7680, 2880))
     return fake
 
 
@@ -36,14 +36,12 @@ def test_scroll_rejects_unknown_direction(ui):
         inputs.scroll(10, 10, direction="sideways")
 
 
-def test_scale_maps_pixels_to_abs(monkeypatch):
-    monkeypatch.setattr(inputs, "_extent", (7680, 2880))
-    assert inputs._scale(3840, 1440) == (32768, 32768)  # layout centre -> round(0.5*65535)
+def test_scale_maps_pixels_to_abs():
+    assert inputs._scale(3840, 1440, (7680, 2880)) == (32768, 32768)  # layout centre -> round(0.5*65535)
 
 
-def test_scale_clamps_out_of_range(monkeypatch):
-    monkeypatch.setattr(inputs, "_extent", (7680, 2880))
-    assert inputs._scale(99999, -50) == (inputs._ABS_MAX, 0)
+def test_scale_clamps_out_of_range():
+    assert inputs._scale(99999, -50, (7680, 2880)) == (inputs._ABS_MAX, 0)
 
 
 def test_move_emits_scaled_abs(ui):
@@ -148,14 +146,17 @@ def test_layout_extent_uses_logical_size(monkeypatch):
     assert inputs._layout_extent() == (1920.0, 1080.0)  # physical / scale
 
 
-def test_device_not_wedged_by_transient_extent_failure(monkeypatch):
-    monkeypatch.setattr(inputs, "_ui", None)
-    monkeypatch.setattr(inputs, "_extent", None)
+def test_each_pointer_action_reads_the_current_layout(ui, monkeypatch):
+    extents = iter([(1000, 1000), (2000, 1000)])
+    monkeypatch.setattr(inputs, "_layout_extent", lambda: next(extents))
+    inputs.move(500, 500)
+    inputs.move(500, 500)  # a monitor was added in between
+    xs = [v for (t, c, v) in ui.events if t == e.EV_ABS and c == e.ABS_X]
+    assert xs == [32768, 16384]
 
-    def boom():
-        raise RuntimeError("transient hyprctl failure")
 
-    monkeypatch.setattr(inputs, "_layout_extent", boom)
-    with pytest.raises(RuntimeError):
-        inputs._device()
-    assert inputs._ui is None  # nothing committed -> a later call retries
+def test_drag_reads_the_layout_once_before_the_button_goes_down(ui, monkeypatch):
+    calls = []
+    monkeypatch.setattr(inputs, "_layout_extent", lambda: calls.append(1) or (1000, 1000))
+    inputs.drag(0, 0, 500, 500)
+    assert calls == [1]

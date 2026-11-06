@@ -1,0 +1,12 @@
+# One hypr-cua server per desktop login. systemd listens here and starts
+# hypr-cua.service on the first connection. There is no [Install] section: start
+# this socket from your compositor's startup, so each new server gets the current
+# session's Wayland variables (see the README).
+[Unit]
+Description=hypr-cua MCP socket
+PartOf=graphical-session.target
+
+[Socket]
+ListenStream=%t/hypr-cua/mcp.sock
+SocketMode=0600
+DirectoryMode=0700

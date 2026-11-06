@@ -1,5 +1,7 @@
 """Tests for server tool wiring: focus-verify safety, frame-id contract, errors."""
 import json
+import threading
+import time
 
 import pytest
 
@@ -332,3 +334,53 @@ def test_main_installs_exit_handlers_before_serving(monkeypatch):
     monkeypatch.setattr(server.mcp, "run", lambda: order.append("run"))
     server.main()
     assert order == ["handlers", "run"]
+
+
+def test_main_dispatches_serve_mode(monkeypatch):
+    from hypr_cua_mcp import serve
+
+    monkeypatch.setattr(server.sys, "argv", ["hypr-cua-mcp", "--serve"])
+    monkeypatch.setattr(serve, "main", lambda: 0)
+    monkeypatch.setattr(server.mcp, "run", lambda: pytest.fail("serve mode must not run stdio"))
+    with pytest.raises(SystemExit) as e:
+        server.main()
+    assert e.value.code == 0
+
+
+# --- one desktop lock across sessions ---
+
+def test_desktop_tools_run_one_at_a_time(monkeypatch):
+    store = coords.FrameStore()
+    fid = store.set_last(_frame())
+    monkeypatch.setattr(coords, "frames", store)
+    events, started, release = [], threading.Event(), threading.Event()
+
+    def slow_focus(cid):
+        events.append("focus")
+        started.set()
+        release.wait(2)
+        return True
+
+    monkeypatch.setattr(hyprtree, "find_window", lambda cid: {"id": cid})
+    monkeypatch.setattr(hyprcontrol, "focus_window", slow_focus)
+    monkeypatch.setattr(inputs, "type_text", lambda t: events.append("type"))
+    monkeypatch.setattr(inputs, "click", lambda gx, gy, button="left": events.append("click"))
+    typer = threading.Thread(target=server.type_text, args=("hi",), kwargs={"con_id": "0xa"})
+    typer.start()
+    assert started.wait(2)
+    clicker = threading.Thread(target=server.click, args=(1, 1), kwargs={"frame_id": fid})
+    clicker.start()
+    time.sleep(0.05)
+    assert clicker.is_alive() and events == ["focus"]  # the click waits for the focus-and-type call
+    release.set()
+    typer.join(2)
+    clicker.join(2)
+    assert not typer.is_alive() and not clicker.is_alive()
+    assert events == ["focus", "type", "click"]
+
+
+def test_wrapped_desktop_tools_keep_their_schema():
+    import asyncio
+
+    tools = {t.name: t.model_dump(by_alias=True) for t in asyncio.run(server.mcp.list_tools())}
+    assert {"x", "y", "button", "frame_id"} <= set(tools["click"]["inputSchema"]["properties"])

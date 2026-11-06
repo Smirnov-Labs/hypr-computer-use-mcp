@@ -81,6 +81,27 @@ sh -c '<command>'; printf '\n__TASK_DONE__:%s\n' "$?"; exec sleep 2147483647
 - A finished task's pane stays alive (the keep-alive `sleep`) until `task_stop`, so
   `tmux_list` still shows it as live.
 
+## Shared server (`--serve`)
+
+- Restarting `hypr-cua.service` ends everything in the service's cgroup: hypr-cua's
+  tmux sessions and tasks, a private Chrome, and the `wl-copy` that holds a
+  clipboard `write_clipboard` set.
+- A call that is running when the service restarts fails with "connection to the
+  hypr-cua service was lost; the operation may have completed". Check the state
+  before you retry it.
+- A client that opens with the legacy `initialize` handshake can't continue on a new
+  connection. Its connector exits when the service goes away, and the client needs a
+  reconnect (Claude Code: `/mcp`). Clients on MCP 2026-07-28, Claude Code among them,
+  reconnect by themselves.
+- All sessions share one browser, so they share its tabs, cookies and idle timer.
+- Desktop actions from different sessions take turns. One that is waiting for its
+  turn still runs after its client cancels it or disconnects.
+- At most 40 tool calls run at once across all sessions (anyio's worker threads).
+  Further calls wait for a free thread.
+- The service reads `WAYLAND_DISPLAY` and `HYPRLAND_INSTANCE_SIGNATURE` from the
+  systemd user manager when it starts. Without the startup line from the README, a
+  service started after a Hyprland restart can keep the old values.
+
 ## Smaller things
 
 - `read_clipboard` is text-only: with an image on the clipboard it returns
