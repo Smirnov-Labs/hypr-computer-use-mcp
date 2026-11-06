@@ -46,7 +46,8 @@ lessons in [`docs/gotchas.md`](docs/gotchas.md). The short version:
 | `hyprcontrol.py` | mutations via `hyprctl eval 'hl.dispatch(hl.dsp.…)'` (focus / workspace / float / launch) |
 | `inputs.py` | input synthesis via a self-owned `evdev.UInput` (abs pointer + wheel + keyboard) |
 | `tmux.py` / `taskrunner.py` | hidden-tmux terminal + task channels (no window, no focus) |
-| `cdp.py` | drive Chrome tabs over the DevTools protocol (attach-only) |
+| `browser.py` | which Chrome the CDP channel drives; the private headless Chrome's launch, idle stop and exit |
+| `cdp.py` | drive Chrome tabs over the DevTools protocol (one WebSocket and one deadline per operation) |
 | `clipboard.py` | `wl-clipboard` read / write |
 
 ## Conventions that bite if you ignore them
@@ -56,9 +57,9 @@ lessons in [`docs/gotchas.md`](docs/gotchas.md). The short version:
   — build these in `hyprcontrol.py`, quoting user strings with `_lua_str`. Window
   targets are the `"address:0x…"` selector.
 - **The `frame_id` contract is load-bearing.** Pointer tools take coordinates *in a
-  specific screenshot's pixel space* plus its `frame_id`, and reject a missing/stale id
-  rather than mapping against the wrong frame. Don't add a pointer tool that takes raw
-  global pixels.
+  specific screenshot's pixel space* plus its `frame_id`, and reject a stale or unknown
+  id rather than mapping against the wrong frame. A missing frame_id means the caller's
+  own latest screenshot. Don't add a pointer tool that takes raw global pixels.
 - **`follow_mouse=1` ties keyboard focus to the pointer.** Focusing a window/workspace
   warps the cursor, so `hyprcontrol._focus_keeping_cursor` restores it afterwards — a
   background agent must not yank the user's real, shared cursor. The restore has to be a

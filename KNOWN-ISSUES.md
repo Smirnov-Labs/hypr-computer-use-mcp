@@ -44,12 +44,18 @@ capture (`grim -o <name>`) with the crop scaled to match.
 - `cdp_click` / `cdp_type` inject JavaScript (`element.click()`; set `value` and
   dispatch `input`/`change`) rather than sending `Input.dispatch*` events, so
   handlers that require trusted events won't fire.
-- Chrome M111+ rejects the DevTools WebSocket without `--remote-allow-origins`.
-  Auto-launch and `bin/hypr-cua-chrome` pass it; add it yourself if you start the
-  browser some other way.
-- The test suite mocks Chrome completely. The channel was smoke-tested live against
-  a real Chrome, but unusual DevTools replies, slow launches and very large pages
-  can still surprise it.
+- The private Chrome is headless. Some sites treat headless browsers differently;
+  use the automation profile on port 9222 for those.
+- The private Chrome stops after 10 minutes without a `cdp_*` call, and its tabs
+  and cookies go with it.
+- Starting the automation browser while a private Chrome is in use doesn't switch
+  browsers. The switch happens once the private one stops.
+- The private Chrome's DevTools port listens on loopback without authentication,
+  like port 9222 does. Any local process can drive it.
+- `cdp_screenshot` captures the viewport only.
+- The test suite mocks Chrome completely. Live checks cover launch, load waits,
+  reading, screenshots and shutdown, but unusual DevTools replies can still
+  surprise it.
 
 ## Task runner (`task_*`)
 
