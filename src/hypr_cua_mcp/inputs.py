@@ -84,7 +84,6 @@ def _key_capabilities() -> list[int]:
 
 
 _ui: UInput | None = None
-_extent: tuple[float, float] | None = None
 _ui_lock = threading.Lock()
 
 
@@ -118,15 +117,11 @@ def _layout_extent() -> tuple[float, float]:
 def _device() -> UInput:
     """The process-lifetime virtual input device (created + settled once).
 
-    Double-checked locking so pipelined tool calls can't race two devices; and we
-    compute the extent + build the device locally and only commit the globals after
-    BOTH succeed, so one transient hyprctl failure doesn't permanently wedge input.
-    """
-    global _ui, _extent
+    Double-checked locking so concurrent tool calls can't race two devices."""
+    global _ui
     if _ui is None:
         with _ui_lock:
             if _ui is None:
-                extent = _layout_extent()  # may raise -> nothing committed; retried next call
                 cap = {
                     e.EV_KEY: _key_capabilities(),
                     e.EV_ABS: [
@@ -137,33 +132,39 @@ def _device() -> UInput:
                 }
                 dev = UInput(cap, name="hypr-cua-virtual-input", input_props=[e.INPUT_PROP_POINTER])
                 time.sleep(_SETTLE_S)  # let the compositor bind the device before first use
-                _extent, _ui = extent, dev  # commit only after both succeed
+                _ui = dev
     return _ui
 
 
-def _scale(gx: int, gy: int) -> tuple[int, int]:
-    """Map global pixels -> absolute-axis units for the current layout extent."""
-    w, h = _extent  # set alongside the device
+def _scale(gx: int, gy: int, extent: tuple[float, float]) -> tuple[int, int]:
+    """Map global pixels to absolute-axis units for the layout extent `extent`."""
+    w, h = extent
     ax = round(max(0, min(gx, w)) / w * _ABS_MAX)
     ay = round(max(0, min(gy, h)) / h * _ABS_MAX)
     return ax, ay
 
 
-def _abs_move(ui: UInput, gx: int, gy: int) -> None:
-    ax, ay = _scale(gx, gy)
+def _abs_move(ui: UInput, gx: int, gy: int, extent: tuple[float, float]) -> None:
+    ax, ay = _scale(gx, gy, extent)
     ui.write(e.EV_ABS, e.ABS_X, ax)
     ui.write(e.EV_ABS, e.ABS_Y, ay)
     ui.syn()
 
 
+# Each pointer action reads the layout once (one hyprctl query, about 8 ms) before
+# it sends any event. A monitor hotplug then can't skew later clicks in a
+# long-lived server, and a failed read can't leave a drag's button held down.
+
 def move(gx: int, gy: int) -> None:
-    _abs_move(_device(), gx, gy)
+    extent = _layout_extent()
+    _abs_move(_device(), gx, gy, extent)
 
 
 def click(gx: int, gy: int, button: str = "left", count: int = 1) -> None:
     b = _button(button)
+    extent = _layout_extent()
     ui = _device()
-    _abs_move(ui, gx, gy)
+    _abs_move(ui, gx, gy, extent)
     for i in range(max(1, count)):
         if i:
             time.sleep(_CLICK_GAP_S)
@@ -173,18 +174,20 @@ def click(gx: int, gy: int, button: str = "left", count: int = 1) -> None:
 
 def drag(gx1: int, gy1: int, gx2: int, gy2: int, button: str = "left") -> None:
     b = _button(button)
+    extent = _layout_extent()
     ui = _device()
-    _abs_move(ui, gx1, gy1)
+    _abs_move(ui, gx1, gy1, extent)
     ui.write(e.EV_KEY, b, 1); ui.syn()
-    _abs_move(ui, gx2, gy2)
+    _abs_move(ui, gx2, gy2, extent)
     ui.write(e.EV_KEY, b, 0); ui.syn()
 
 
 def scroll(gx: int, gy: int, direction: str = "down", amount: int = 3) -> None:
     if direction not in ("up", "down"):
         raise ValueError(f"direction must be 'up' or 'down', got {direction!r}")
+    extent = _layout_extent()
     ui = _device()
-    _abs_move(ui, gx, gy)
+    _abs_move(ui, gx, gy, extent)
     step = 1 if direction == "up" else -1  # REL_WHEEL: +1 up, -1 down
     for _ in range(max(1, amount)):
         ui.write(e.EV_REL, e.REL_WHEEL, step); ui.syn()

@@ -66,7 +66,7 @@ scaled monitors is still open — see [`KNOWN-ISSUES.md`](../KNOWN-ISSUES.md).)
 `inputs.py` creates one `evdev.UInput` (abs X/Y + buttons + wheel + US-ASCII
 keyboard, `INPUT_PROP_POINTER`) that the server process owns for its lifetime.
 Global pixels map to the device's abs axes by `abs = pixel * 65535 / layout_extent`
-(extent from `hyprctl monitors`; the compositor maps `[0,65535]` onto the layout,
+(extent from `hyprctl monitors`, read on every pointer action; the compositor maps `[0,65535]` onto the layout,
 verified ~1px). Buttons/wheel/keys emit directly. Because these are *real* input
 events, they reset the compositor idle timer — no synthetic-input self-lock, no
 `ydotoold` daemon. See `docs/gotchas.md` for why ydotool (2× abs coords, no
