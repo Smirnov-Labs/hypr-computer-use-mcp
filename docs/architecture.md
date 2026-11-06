@@ -20,7 +20,8 @@ X11 backends swapped for Wayland ones; `coords.py`,
 | `coords.py` | The mapping between screenshot pixels and global layout pixels; stores the last capture's frame |
 | `clipboard.py` | `wl-clipboard` read / write |
 | `tmux.py` / `taskrunner.py` | Hidden-tmux terminal + task channels on an isolated socket (no window, no focus) |
-| `cdp.py` | Drive Chrome tabs over the DevTools protocol (dedicated profile, never the user's main one) |
+| `browser.py` | which Chrome the CDP channel drives; the private headless Chrome's launch, idle stop and exit |
+| `cdp.py` | drive Chrome tabs over the DevTools protocol (one WebSocket and one deadline per operation) |
 
 ## Data flow (perceive → reason → act)
 
@@ -56,8 +57,8 @@ global_y = region_y + screenshot_y / scale_y   (clamped to the region)
 
 A `FrameStore` binds each capture to an opaque `frame_id`; the pointer tools take
 it back, so a click resolves against *the exact screenshot it was reasoned
-against*. A missing or stale id is rejected, not silently mapped against the wrong
-frame. (Verified at monitor scale 1.0, where global px == physical px; capture on
+against*. A stale or unknown id is rejected, not silently mapped against the wrong
+frame, and a missing id means the caller's latest screenshot. (Verified at monitor scale 1.0, where global px == physical px; capture on
 scaled monitors is still open — see [`KNOWN-ISSUES.md`](../KNOWN-ISSUES.md).)
 
 ## Input: a self-owned uinput device

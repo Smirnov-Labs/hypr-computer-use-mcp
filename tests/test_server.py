@@ -1,8 +1,10 @@
 """Tests for server tool wiring: focus-verify safety, frame-id contract, errors."""
+import json
+
 import pytest
 
 from hypr_cua_mcp import (
-    cdp, clipboard, coords, hyprcontrol, hyprtree, inputs, server, taskrunner, tmux,
+    browser, cdp, clipboard, coords, hyprcontrol, hyprtree, inputs, server, taskrunner, tmux,
 )
 
 
@@ -175,27 +177,32 @@ def test_tmux_list_delegates(monkeypatch):
 # --- CDP browser wiring (delegate; type muzzles the value) ---
 
 def test_cdp_targets_delegates_and_serializes(monkeypatch):
-    monkeypatch.setattr(cdp, "list_targets", lambda: [{"id": "T1", "url": "http://a"}])
+    monkeypatch.setattr(cdp, "list_targets",
+                        lambda: {"browser": "private", "tabs": [{"id": "T1", "url": "http://a"}]})
     out = server.cdp_targets()
-    assert "T1" in out and "http://a" in out
+    assert '"browser":"private"' in out and "T1" in out
 
 
-def test_cdp_eval_delegates_and_json_encodes(monkeypatch):
+def test_cdp_eval_delegates_with_timeout_and_json_encodes(monkeypatch):
     seen = {}
     monkeypatch.setattr(cdp, "eval_js",
-                        lambda t, e: seen.update(t=t, e=e) or {"n": 7})
-    out = server.cdp_eval("T1", "({n:7})")
-    assert seen == {"t": "T1", "e": "({n:7})"}
-    assert out == '{"n": 7}'
+                        lambda t, e, timeout: seen.update(t=t, e=e, timeout=timeout) or {"n": 7})
+    out = server.cdp_eval("T1", "({n:7})", timeout=5)
+    assert seen == {"t": "T1", "e": "({n:7})", "timeout": 5}
+    assert out == '{"n":7}'
 
 
-def test_cdp_open_delegates(monkeypatch):
+def test_cdp_open_and_navigate_pass_wait_for_and_timeout(monkeypatch):
     seen = {}
     monkeypatch.setattr(cdp, "open_tab",
-                        lambda url: seen.update(url=url) or {"id": "N1", "url": url})
-    out = server.cdp_open("https://x")
-    assert seen == {"url": "https://x"}
-    assert "N1" in out
+                        lambda url, wait_for, timeout: seen.update(open=(url, wait_for, timeout))
+                        or {"id": "N1", "timed_out": False})
+    monkeypatch.setattr(cdp, "navigate",
+                        lambda target, url, wait_for, timeout: seen.update(nav=(target, url, wait_for, timeout))
+                        or {"id": target, "timed_out": True})
+    assert "N1" in server.cdp_open("https://x", wait_for="#a", timeout=5)
+    assert '"timed_out":true' in server.cdp_navigate("T1", "https://y")
+    assert seen == {"open": ("https://x", "#a", 5), "nav": ("T1", "https://y", None, 30)}
 
 
 def test_cdp_type_delegates_and_hides_text(monkeypatch):
@@ -232,7 +239,7 @@ def test_task_status_delegates_and_serializes(monkeypatch):
     )
     out = server.task_status("build", tail=5)
     assert seen == {"n": "build", "t": 5}
-    assert '"state": "done"' in out and '"exit_code": 0' in out
+    assert '"state":"done"' in out and '"exit_code":0' in out
 
 
 def test_task_list_delegates(monkeypatch):
@@ -269,3 +276,59 @@ def test_server_advertises_the_package_version():
 
     assert server.mcp.version == version("hypr-cua-mcp")
     assert hypr_cua_mcp.__version__ == version("hypr-cua-mcp")
+
+
+# --- text tools return plain text, not {"result": ...} structured content ---
+
+def test_text_tools_advertise_no_output_schema():
+    import asyncio
+
+    tools = asyncio.run(server.mcp.list_tools())
+    assert [t.name for t in tools if t.model_dump(by_alias=True).get("outputSchema")] == []
+
+
+def test_text_tool_result_is_compact_plain_text(monkeypatch):
+    import asyncio
+
+    monkeypatch.setattr(tmux, "list_panes", lambda: [{"session": "w", "size": "80x24"}])
+    res = asyncio.run(server.mcp.call_tool("tmux_list", {}))
+    assert res.structured_content is None
+    assert res.content[0].text == '[{"session":"w","size":"80x24"}]'
+
+
+def test_cdp_read_passes_selector_and_max_chars(monkeypatch):
+    seen = {}
+    monkeypatch.setattr(cdp, "read_text",
+                        lambda target, selector, max_chars: seen.update(a=(target, selector, max_chars))
+                        or {"text": "x", "truncated": False})
+    assert '"text":"x"' in server.cdp_read("T1", selector="main", max_chars=100)
+    assert seen == {"a": ("T1", "main", 100)}
+
+
+def test_cdp_screenshot_returns_an_image_and_a_caption_without_frame_id(monkeypatch):
+    monkeypatch.setattr(cdp, "screenshot",
+                        lambda t: (b"\x89PNGfake", {"title": "T", "url": "http://p/",
+                                                    "width": 4, "height": 3}))
+    img, caption = server.cdp_screenshot("T1")
+    assert img.data == b"\x89PNGfake"
+    assert "4x3px" in caption and "No frame_id" in caption
+
+
+def test_lone_surrogates_are_escaped_so_the_transport_can_send_them(monkeypatch):
+    import asyncio
+
+    monkeypatch.setattr(cdp, "read_text",
+                        lambda target, selector, max_chars: {"text": "cut \ud83d"})
+    res = asyncio.run(server.mcp.call_tool("cdp_read", {"target": "T1"}))
+    res.model_dump_json()  # raised PydanticSerializationError before the escape
+    assert json.loads(res.content[0].text) == {"text": "cut \ud83d"}
+    assert server._json({"t": "é"}) == '{"t":"é"}'
+
+
+def test_main_installs_exit_handlers_before_serving(monkeypatch):
+    order = []
+    monkeypatch.setattr(server.sys, "argv", ["hypr-cua-mcp"])
+    monkeypatch.setattr(browser, "install_exit_handlers", lambda: order.append("handlers"))
+    monkeypatch.setattr(server.mcp, "run", lambda: order.append("run"))
+    server.main()
+    assert order == ["handlers", "run"]

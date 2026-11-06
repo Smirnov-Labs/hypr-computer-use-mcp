@@ -1,353 +1,584 @@
-"""Tests for the CDP browser client (HTTP /json + WebSocket send/recv mocked; no live Chrome).
-
-Nothing here may launch a real browser: the autouse `_no_launch` fixture disables
-autolaunch and turns `_spawn` into a hard failure, so a stray reachability miss can
-never Popen Chrome on the developer's desktop.
-"""
+"""Tests for the CDP client. browser.http_get_json and the WebSocket are fakes, and
+the autouse fixture swaps in a fake browser manager at a fixed base URL, with
+browser._spawn as a tripwire. tests/conftest.py also points any stray real call at
+port 1 with autolaunch off."""
+import base64
+import io
 import json
-import urllib.error
-import urllib.request
+import time
+from contextlib import contextmanager
 
 import pytest
+import websocket
+from PIL import Image as PILImage
 
-from hypr_cua_mcp import cdp
+from hypr_cua_mcp import browser, capture, cdp
+
+BASE = "http://127.0.0.1:9999"
 
 
 @pytest.fixture(autouse=True)
-def _no_launch(monkeypatch):
-    # Never spawn a real Chrome from a unit test. Autolaunch off means an
-    # unreachable endpoint raises instead of Popen-ing; _spawn is a tripwire.
-    monkeypatch.setenv("HYPR_CUA_CDP_AUTOLAUNCH", "0")
-    monkeypatch.setattr(cdp, "_proc", None, raising=False)
+def _fake_browser(monkeypatch):
+    class FakeManager:
+        mode = "private"
+
+        def __init__(self):
+            self.dls = []
+
+        @contextmanager
+        def use(self, dl=None):
+            self.dls.append(dl)
+            yield BASE
+
+    monkeypatch.setattr(browser, "manager", FakeManager())
     monkeypatch.setattr(
-        cdp, "_spawn",
+        browser, "_spawn",
         lambda argv: pytest.fail(f"real Chrome spawn blocked in tests: {argv}"),
     )
 
 
-def test_launch_chrome_includes_remote_allow_origins(monkeypatch):
-    # Chrome M111+ 403-rejects the DevTools WebSocket unless the connecting origin
-    # is allow-listed; the auto-launched browser must pass --remote-allow-origins.
-    seen = {}
-    monkeypatch.setattr(cdp, "_find_chrome", lambda binary=None: "/usr/bin/google-chrome")
-    monkeypatch.setattr(cdp, "_wait_reachable", lambda base, timeout: None)
-
-    class _P:
-        pid = 4321
-
-    monkeypatch.setattr(cdp, "_spawn", lambda argv: seen.update(argv=argv) or _P())
-    info = cdp.launch_chrome(port=9333, user_data_dir="/tmp/x")
-    assert "--remote-allow-origins=*" in seen["argv"]
-    assert "--remote-debugging-port=9333" in seen["argv"]
-    assert info["port"] == 9333
-
-
-# --- fakes ------------------------------------------------------------------
-
 class AutoWS:
-    """A fake CDP websocket that answers each command with a canned result,
-    tagging the reply with the request's own id so framing matches. Optionally
-    emits N id-less events first, to prove they're skipped."""
+    """Answers every command with one canned result or error, optionally after N
+    id-less events, so framing and event handling are visible."""
 
     def __init__(self, result=None, error=None, events_before=0):
-        self.sent = []            # parsed frames the client sent
+        self.sent, self.timeouts = [], []
         self.result = {} if result is None else result
         self.error = error
         self.events_before = events_before
         self.closed = False
-        self._pending = []
+        self.close_timeout = "unset"
+        self._q = []
+
+    def settimeout(self, t):
+        self.timeouts.append(t)
 
     def send(self, data):
         frame = json.loads(data)
         self.sent.append(frame)
         for _ in range(self.events_before):
-            self._pending.append({"method": "Page.frameNavigated", "params": {}})
+            self._q.append({"method": "Page.frameNavigated", "params": {}})
         if self.error is not None:
-            self._pending.append({"id": frame["id"], "error": self.error})
+            self._q.append({"id": frame["id"], "error": self.error})
         else:
-            self._pending.append({"id": frame["id"], "result": self.result})
+            self._q.append({"id": frame["id"], "result": self.result})
 
     def recv(self):
-        return json.dumps(self._pending.pop(0))
+        if not self._q:
+            raise websocket.WebSocketTimeoutException("timed out")
+        return json.dumps(self._q.pop(0))
 
-    def close(self):
+    def close(self, timeout=None):
+        self.close_timeout = timeout
+
+    def shutdown(self):
         self.closed = True
 
 
-def _http_router(targets, *, browser_ws="ws://127.0.0.1:9222/devtools/browser/xyz"):
-    """Fake `_http_get_json`: version probe + /json target list, by URL suffix."""
-    def fake(url):
-        if url.endswith("/json/version"):
+class ScriptWS:
+    """Scripted by method: replies (dict, or callable(params) -> dict), CDP errors,
+    methods that never get a reply, and events queued before or after a reply. An
+    empty queue reads as a socket timeout, so deadlines pass at once."""
+
+    def __init__(self, replies=None, errors=None, before=None, after=None, silent=()):
+        self.replies = replies or {}
+        self.errors = errors or {}
+        self.before = before or {}
+        self.after = after or {}
+        self.silent = set(silent)
+        self.sent, self.timeouts, self._q = [], [], []
+
+    def settimeout(self, t):
+        self.timeouts.append(t)
+
+    def send(self, data):
+        f = json.loads(data)
+        self.sent.append(f)
+        m = f["method"]
+        self._q.extend(self.before.get(m, []))
+        if m in self.errors:
+            self._q.append({"id": f["id"], "error": self.errors[m]})
+        elif m not in self.silent:
+            r = self.replies.get(m, {})
+            self._q.append({"id": f["id"], "result": r(f.get("params", {})) if callable(r) else r})
+        self._q.extend(self.after.get(m, []))
+
+    def recv(self):
+        if not self._q:
+            raise websocket.WebSocketTimeoutException("timed out")
+        return json.dumps(self._q.pop(0))
+
+    def shutdown(self):
+        pass
+
+
+def _router(targets, browser_ws="ws://127.0.0.1:9999/devtools/browser/xyz"):
+    def fake(url, timeout=None):
+        if url == BASE + "/json/version":
             return {"Browser": "Chrome/x", "webSocketDebuggerUrl": browser_ws}
-        if url.endswith("/json"):
+        if url == BASE + "/json":
             return targets
         raise AssertionError(f"unexpected HTTP url in test: {url}")
     return fake
 
 
 def _page(tid, **kw):
-    d = {
-        "id": tid, "type": "page", "title": f"title-{tid}", "url": f"http://{tid}",
-        "webSocketDebuggerUrl": f"ws://127.0.0.1:9222/devtools/page/{tid}",
-    }
+    d = {"id": tid, "type": "page", "title": f"title-{tid}", "url": f"http://{tid}",
+         "webSocketDebuggerUrl": f"ws://127.0.0.1:9999/devtools/page/{tid}"}
     d.update(kw)
     return d
 
 
 def _eval_result(value):
-    """Shape of a Runtime.evaluate command-result carrying a by-value value."""
     return {"result": {"type": "object", "value": value}}
 
 
-# --- _Session framing: monotonic id, method/params, event-skipping ----------
-
-def test_command_frames_monotonic_ids_and_params():
-    ws = AutoWS(result={"ok": 1}, events_before=2)  # 2 events precede each reply
-    sess = cdp._Session(ws)
-    r1 = sess.command("Domain.a", {"x": 1})
-    r2 = sess.command("Domain.b")  # default params -> {}
-    assert r1 == {"ok": 1}
-    assert r2 == {"ok": 1}
-    assert [f["id"] for f in ws.sent] == [1, 2]           # monotonic, starts at 1
-    assert ws.sent[0]["method"] == "Domain.a"
-    assert ws.sent[0]["params"] == {"x": 1}
-    assert ws.sent[1]["params"] == {}                     # omitted params -> empty object
+def _evals(fn):
+    """A Runtime.evaluate reply whose value is computed from the expression."""
+    return lambda params: _eval_result(fn(params["expression"]))
 
 
-def test_command_surfaces_protocol_error_as_cdperror():
-    ws = AutoWS(error={"code": -32000, "message": "bad target"})
-    sess = cdp._Session(ws)
+def _wire(monkeypatch, ws, targets):
+    monkeypatch.setattr(browser, "http_get_json", _router(targets))
+    monkeypatch.setattr(cdp, "_ws_connect", lambda url, timeout=None: ws)
+
+
+# --- connection --------------------------------------------------------------
+
+def test_ws_connect_sends_no_origin_header(monkeypatch):
+    seen = {}
+    monkeypatch.setattr(cdp.websocket, "create_connection",
+                        lambda url, **kw: seen.update(url=url, **kw) or "WS")
+    assert cdp._ws_connect("ws://127.0.0.1:1/devtools/page/T", 3) == "WS"
+    assert seen["suppress_origin"] is True
+    assert seen["timeout"] == 3
+
+
+# --- _Session ----------------------------------------------------------------
+
+def test_command_frames_monotonic_ids_and_keeps_events():
+    ws = AutoWS(result={"ok": 1}, events_before=2)
+    sess = cdp._Session(ws, cdp._Deadline(10))
+    assert sess.command("Domain.a", {"x": 1}) == {"ok": 1}
+    assert sess.command("Domain.b") == {"ok": 1}
+    assert [f["id"] for f in ws.sent] == [1, 2]
+    assert ws.sent[0]["params"] == {"x": 1} and ws.sent[1]["params"] == {}
+    assert len(sess.events) == 4
+
+
+def test_command_surfaces_protocol_error():
+    sess = cdp._Session(AutoWS(error={"code": -32000, "message": "bad target"}), cdp._Deadline(10))
     with pytest.raises(cdp.CdpError) as e:
         sess.command("Runtime.evaluate", {"expression": "1"})
     assert "bad target" in str(e.value)
 
 
-def test_command_times_out_without_a_matching_reply(monkeypatch):
-    class Flood:
-        def __init__(self):
-            self.sent = []
-
-        def send(self, data):
-            self.sent.append(json.loads(data))
-
+def test_command_times_out_at_the_deadline():
+    class Flood(AutoWS):
         def recv(self):
-            return json.dumps({"method": "evt", "params": {}})  # never a matching id
+            return json.dumps({"method": "evt", "params": {}})
 
-        def close(self):
-            pass
-
-    monkeypatch.setattr(cdp, "CMD_TIMEOUT", 0)  # deadline elapses after first skip
-    sess = cdp._Session(Flood())
-    with pytest.raises(cdp.CdpError):
-        sess.command("Runtime.evaluate")
+    with pytest.raises(cdp.CdpTimeout) as e:
+        cdp._Session(Flood(), cdp._Deadline(0.05)).command("Runtime.evaluate")
+    assert "no reply within 0.05 s" in str(e.value)
 
 
-# --- list_targets -----------------------------------------------------------
+def test_an_expired_command_sends_nothing():
+    ws = AutoWS(result={})
+    dl = cdp._Deadline(5)
+    dl.at = time.monotonic() - 1
+    with pytest.raises(cdp.CdpTimeout):
+        cdp._Session(ws, dl).command("Page.navigate")
+    assert ws.sent == []
 
-def test_list_targets_parses_pages_only(monkeypatch):
+
+def test_socket_waits_only_for_the_time_that_remains():
+    ws = AutoWS(result={})
+    cdp._Session(ws, cdp._Deadline(5)).command("X")
+    assert all(4 < t <= 5 for t in ws.timeouts) and len(ws.timeouts) == 2
+
+
+def test_a_closed_connection_is_not_reported_as_a_timeout():
+    class Closed(AutoWS):
+        def recv(self):
+            raise websocket.WebSocketConnectionClosedException("gone")
+
+    with pytest.raises(cdp.CdpError) as e:
+        cdp._Session(Closed(), cdp._Deadline(5)).command("Page.navigate")
+    assert not isinstance(e.value, cdp.CdpTimeout)
+    assert "connection closed" in str(e.value)
+
+
+def test_a_close_frame_is_reported_as_closed():
+    class CloseFrame(AutoWS):
+        def recv(self):
+            return ""  # what websocket-client returns for a close frame
+
+    with pytest.raises(cdp.CdpError) as e:
+        cdp._Session(CloseFrame(), cdp._Deadline(5)).command("Page.navigate")
+    assert not isinstance(e.value, cdp.CdpTimeout)
+    assert "connection closed" in str(e.value)
+
+
+def test_a_failed_send_is_reported_as_closed():
+    class BrokenSend(AutoWS):
+        def send(self, data):
+            raise websocket.WebSocketConnectionClosedException("gone")
+
+    with pytest.raises(cdp.CdpError) as e:
+        cdp._Session(BrokenSend(), cdp._Deadline(5)).command("Page.navigate")
+    assert "connection closed" in str(e.value)
+
+
+def test_close_drops_the_socket_without_sending_a_close_frame():
+    ws = AutoWS()
+    cdp._Session(ws, cdp._Deadline(5)).close()
+    assert ws.closed is True
+    assert ws.close_timeout == "unset"  # close() would send a frame on the old timeout
+
+
+def test_clamp_timeout():
+    assert cdp.clamp_timeout(0) == 1
+    assert cdp.clamp_timeout(1000) == 300
+    assert cdp.clamp_timeout(12.5) == 12.5
+
+
+# --- list_targets ------------------------------------------------------------
+
+def test_list_targets_reports_the_browser_and_pages_only(monkeypatch):
     targets = [
         _page("T1", title="Tab one", url="http://a"),
         {"id": "SW", "type": "service_worker", "title": "sw", "url": "http://sw"},
         _page("T2", title="Tab two", url="http://b"),
     ]
-    monkeypatch.setattr(cdp, "_http_get_json", _http_router(targets))
+    monkeypatch.setattr(browser, "http_get_json", _router(targets))
     out = cdp.list_targets()
-    assert [t["id"] for t in out] == ["T1", "T2"]          # background workers filtered out
-    assert out[0] == {"id": "T1", "title": "Tab one", "url": "http://a", "type": "page"}
+    assert out["browser"] == "private"
+    assert out["tabs"] == [{"id": "T1", "title": "Tab one", "url": "http://a"},
+                           {"id": "T2", "title": "Tab two", "url": "http://b"}]
 
 
-# --- eval_js: value out, exceptionDetails -> CdpError -----------------------
+# --- eval_js -----------------------------------------------------------------
 
 def test_eval_js_returns_value_and_frames_runtime_evaluate(monkeypatch):
     ws = AutoWS(result=_eval_result(42))
-    monkeypatch.setattr(cdp, "_http_get_json", _http_router([_page("T1")]))
-    monkeypatch.setattr(cdp, "_ws_connect", lambda url: ws)
+    _wire(monkeypatch, ws, [_page("T1")])
     assert cdp.eval_js("T1", "40 + 2") == 42
-    sent = ws.sent[0]
-    assert sent["method"] == "Runtime.evaluate"
-    assert sent["params"]["expression"] == "40 + 2"
-    assert sent["params"]["returnByValue"] is True
-    assert sent["params"]["awaitPromise"] is True
-    assert ws.closed  # connection is closed after the call
+    p = ws.sent[0]["params"]
+    assert ws.sent[0]["method"] == "Runtime.evaluate"
+    assert p["expression"] == "40 + 2"
+    assert p["returnByValue"] is True and p["awaitPromise"] is True
+    assert ws.closed
+
+
+def test_eval_js_uses_the_callers_clamped_timeout(monkeypatch):
+    ws = AutoWS(result=_eval_result(1))
+    _wire(monkeypatch, ws, [_page("T1")])
+    cdp.eval_js("T1", "1", timeout=0)
+    assert ws.timeouts and all(t <= 1 for t in ws.timeouts)
+
+
+def test_eval_js_hands_its_deadline_to_browser_selection(monkeypatch):
+    ws = AutoWS(result=_eval_result(1))
+    _wire(monkeypatch, ws, [_page("T1")])
+    cdp.eval_js("T1", "1", timeout=2)
+    assert browser.manager.dls[-1].timeout == 2
+
+
+def test_time_spent_choosing_the_browser_counts_against_the_deadline(monkeypatch):
+    class SlowProbeManager:
+        mode = "automation"
+
+        @contextmanager
+        def use(self, dl=None):
+            dl.at -= 0.9  # the health probe took 0.9 s of a 1 s budget
+            yield BASE
+
+    seen = []
+    router = _router([_page("T1")])
+
+    def http(url, timeout=None):
+        seen.append(timeout)
+        return router(url)
+
+    monkeypatch.setattr(browser, "manager", SlowProbeManager())
+    monkeypatch.setattr(browser, "http_get_json", http)
+    monkeypatch.setattr(cdp, "_ws_connect", lambda url, timeout=None: AutoWS(result=_eval_result(1)))
+    cdp.eval_js("T1", "1", timeout=1)
+    assert seen and seen[0] <= 0.11
+
+
+def test_navigate_reports_timed_out_when_browser_selection_runs_out_of_time(monkeypatch):
+    class SpentManager:
+        mode = None
+
+        @contextmanager
+        def use(self, dl=None):
+            raise browser.CdpTimeout("the health probe ran out of time")
+            yield BASE  # pragma: no cover
+
+    monkeypatch.setattr(browser, "manager", SpentManager())
+    out = cdp.navigate("T1", "https://x", timeout=1)
+    assert out["timed_out"] is True and out["id"] == "T1"
+    out = cdp.open_tab("https://x", timeout=1)
+    assert out["timed_out"] is True and out["id"] is None
+
+
+def test_one_deadline_covers_discovery_and_connect(monkeypatch):
+    seen = {"http": []}
+    router = _router([_page("T1")])
+
+    def http(url, timeout=None):
+        seen["http"].append(timeout)
+        return router(url)
+
+    ws = AutoWS(result=_eval_result(1))
+    monkeypatch.setattr(browser, "http_get_json", http)
+    monkeypatch.setattr(cdp, "_ws_connect", lambda url, timeout=None: seen.update(ws=timeout) or ws)
+    cdp.eval_js("T1", "1", timeout=2)
+    assert seen["http"] and all(t <= 2 for t in seen["http"])
+    assert seen["ws"] <= 2
 
 
 def test_eval_js_surfaces_exception_details(monkeypatch):
-    ws = AutoWS(result={
-        "result": {"type": "object"},
-        "exceptionDetails": {"text": "Uncaught",
-                             "exception": {"description": "Error: kaboom\n  at <anonymous>"}},
-    })
-    monkeypatch.setattr(cdp, "_http_get_json", _http_router([_page("T1")]))
-    monkeypatch.setattr(cdp, "_ws_connect", lambda url: ws)
+    ws = AutoWS(result={"result": {"type": "object"},
+                        "exceptionDetails": {"text": "Uncaught",
+                                             "exception": {"description": "Error: kaboom"}}})
+    _wire(monkeypatch, ws, [_page("T1")])
     with pytest.raises(cdp.CdpError) as e:
         cdp.eval_js("T1", "throw new Error('kaboom')")
     assert "kaboom" in str(e.value)
 
 
-def test_eval_js_propagates_protocol_error(monkeypatch):
-    ws = AutoWS(error={"code": -32000, "message": "session gone"})
-    monkeypatch.setattr(cdp, "_http_get_json", _http_router([_page("T1")]))
-    monkeypatch.setattr(cdp, "_ws_connect", lambda url: ws)
-    with pytest.raises(cdp.CdpError):
-        cdp.eval_js("T1", "1")
+def test_eval_js_adds_a_hint_when_the_page_navigated(monkeypatch):
+    ws = AutoWS(error={"code": -32000, "message": "Execution context was destroyed."})
+    _wire(monkeypatch, ws, [_page("T1")])
+    with pytest.raises(cdp.CdpError) as e:
+        cdp.eval_js("T1", "location.href = 'x'")
+    assert "use cdp_navigate with wait_for" in str(e.value)
 
 
-def test_resolve_ws_unknown_target_raises(monkeypatch):
-    monkeypatch.setattr(cdp, "_http_get_json", _http_router([_page("T1")]))
-    # _ws_connect intentionally NOT mocked: resolution must fail before any connect.
+def test_unknown_target_raises_before_connecting(monkeypatch):
+    monkeypatch.setattr(browser, "http_get_json", _router([_page("T1")]))
     with pytest.raises(cdp.CdpError) as e:
         cdp.eval_js("NOPE", "1")
     assert "NOPE" in str(e.value)
 
 
-# --- read_text --------------------------------------------------------------
+# --- read / click / type / navigate / open / close ----------------------------
 
-def test_read_text_returns_title_url_text(monkeypatch):
-    payload = {"title": "Hello", "url": "http://p/", "text": "body innertext here"}
-    ws = AutoWS(result=_eval_result(payload))
-    monkeypatch.setattr(cdp, "_http_get_json", _http_router([_page("T1")]))
-    monkeypatch.setattr(cdp, "_ws_connect", lambda url: ws)
-    out = cdp.read_text("T1")
-    assert out == payload
-    assert "innerText" in ws.sent[0]["params"]["expression"]
+def test_read_text_truncates_inside_the_page(monkeypatch):
+    seen = {}
+
+    def value(expr):
+        seen["expr"] = expr
+        return {"title": "T", "url": "http://p/", "text": "abcde", "chars_total": 12}
+
+    _wire(monkeypatch, ScriptWS(replies={"Runtime.evaluate": _evals(value)}), [_page("T1")])
+    out = cdp.read_text("T1", max_chars=5)
+    assert ".slice(0,5)" in seen["expr"]
+    assert "0xD800" in seen["expr"] and "0xDC00" in seen["expr"]  # only a split pair backs up
+    assert out == {"title": "T", "url": "http://p/", "text": "abcde",
+                   "chars_total": 12, "truncated": True}
 
 
-# --- click / type: build the right CDP calls --------------------------------
+def test_read_text_reads_the_selected_element(monkeypatch):
+    seen = {}
+
+    def value(expr):
+        seen["expr"] = expr
+        return {"title": "", "url": "", "text": "hi", "chars_total": 2}
+
+    _wire(monkeypatch, ScriptWS(replies={"Runtime.evaluate": _evals(value)}), [_page("T1")])
+    out = cdp.read_text("T1", selector="#main")
+    assert '"#main"' in seen["expr"]
+    assert out["text"] == "hi" and out["truncated"] is False
+
+
+def test_read_text_with_a_selector_that_matches_nothing_raises(monkeypatch):
+    reply = {"result": {"type": "object"},
+             "exceptionDetails": {"text": "Uncaught",
+                                  "exception": {"description": "Error: no element matches selector #nope"}}}
+    _wire(monkeypatch, ScriptWS(replies={"Runtime.evaluate": reply}), [_page("T1")])
+    with pytest.raises(cdp.CdpError) as e:
+        cdp.read_text("T1", selector="#nope")
+    assert "no element matches" in str(e.value)
+
 
 def test_click_builds_queryselector_click(monkeypatch):
     ws = AutoWS(result=_eval_result(True))
-    monkeypatch.setattr(cdp, "_http_get_json", _http_router([_page("T1")]))
-    monkeypatch.setattr(cdp, "_ws_connect", lambda url: ws)
+    _wire(monkeypatch, ws, [_page("T1")])
     cdp.click("T1", "#submit")
     expr = ws.sent[0]["params"]["expression"]
-    assert ws.sent[0]["method"] == "Runtime.evaluate"
-    assert "querySelector" in expr
-    assert '"#submit"' in expr        # selector embedded as a JS string literal
-    assert ".click()" in expr
+    assert '"#submit"' in expr and ".click()" in expr
 
 
-def test_type_text_sets_value_dispatches_input_and_hides_text(monkeypatch):
+def test_type_text_sets_value_and_hides_text(monkeypatch):
     ws = AutoWS(result=_eval_result(True))
-    monkeypatch.setattr(cdp, "_http_get_json", _http_router([_page("T1")]))
-    monkeypatch.setattr(cdp, "_ws_connect", lambda url: ws)
+    _wire(monkeypatch, ws, [_page("T1")])
     out = cdp.type_text("T1", "#email", "a@b.co")
     expr = ws.sent[0]["params"]["expression"]
-    assert '"#email"' in expr
-    assert '"a@b.co"' in expr          # value embedded as a JS string literal
-    assert "dispatchEvent" in expr and "input" in expr
-    assert "6 chars" in out            # returns a length summary...
-    assert "a@b.co" not in out         # ...never echoes the typed value
-
-
-# --- navigate / open_tab / close_tab ----------------------------------------
-
-def test_navigate_sends_page_navigate(monkeypatch):
-    ws = AutoWS(result={"frameId": "F1", "loaderId": "L1"})
-    monkeypatch.setattr(cdp, "_http_get_json", _http_router([_page("T1")]))
-    monkeypatch.setattr(cdp, "_ws_connect", lambda url: ws)
-    out = cdp.navigate("T1", "https://example.com")
-    assert ws.sent[0]["method"] == "Page.navigate"
-    assert ws.sent[0]["params"] == {"url": "https://example.com"}
-    assert out["url"] == "https://example.com"
-    assert out["frameId"] == "F1"
-
-
-def test_open_tab_creates_target_via_browser_ws(monkeypatch):
-    ws = AutoWS(result={"targetId": "NEW42"})
-    monkeypatch.setattr(cdp, "_http_get_json", _http_router([]))
-    monkeypatch.setattr(cdp, "_ws_connect", lambda url: ws)
-    out = cdp.open_tab("https://example.com")
-    assert ws.sent[0]["method"] == "Target.createTarget"
-    assert ws.sent[0]["params"] == {"url": "https://example.com"}
-    assert out == {"id": "NEW42", "url": "https://example.com"}
+    assert '"#email"' in expr and '"a@b.co"' in expr and "dispatchEvent" in expr
+    assert "6 chars" in out and "a@b.co" not in out
 
 
 def test_close_tab_closes_target(monkeypatch):
     ws = AutoWS(result={"success": True})
-    monkeypatch.setattr(cdp, "_http_get_json", _http_router([]))
-    monkeypatch.setattr(cdp, "_ws_connect", lambda url: ws)
-    out = cdp.close_tab("T7")
-    assert ws.sent[0]["method"] == "Target.closeTarget"
-    assert ws.sent[0]["params"] == {"targetId": "T7"}
-    assert "T7" in out
+    _wire(monkeypatch, ws, [])
+    assert "T7" in cdp.close_tab("T7")
+    assert ws.sent[0] == {"id": 1, "method": "Target.closeTarget", "params": {"targetId": "T7"}}
 
 
-# --- HTTP boundary (_http_get_json) -----------------------------------------
+# --- waiting for the requested navigation -------------------------------------
 
-def test_http_get_json_parses_body(monkeypatch):
-    class _Resp:
-        def __init__(self, body):
-            self._body = body
-
-        def read(self):
-            return self._body
-
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *a):
-            return False
-
-    monkeypatch.setattr(urllib.request, "urlopen",
-                        lambda url, timeout=None: _Resp(b'[{"id":"T1"}]'))
-    assert cdp._http_get_json("http://127.0.0.1:9222/json") == [{"id": "T1"}]
+STATE = {"url": "https://x/final", "title": "X", "ready_state": "complete"}
 
 
-def test_http_get_json_wraps_urlerror_in_cdperror(monkeypatch):
-    def boom(url, timeout=None):
-        raise urllib.error.URLError("connection refused")
+def _load(loader):
+    return {"method": "Page.lifecycleEvent", "params": {"name": "load", "loaderId": loader}}
 
-    monkeypatch.setattr(urllib.request, "urlopen", boom)
+
+def test_navigate_waits_for_the_load_event_of_its_own_loader(monkeypatch):
+    ws = ScriptWS(replies={"Page.navigate": {"frameId": "F", "loaderId": "L2"},
+                           "Runtime.evaluate": _evals(lambda e: STATE)},
+                  after={"Page.navigate": [_load("L1"), _load("L2")]})
+    _wire(monkeypatch, ws, [_page("T1")])
+    out = cdp.navigate("T1", "https://x", timeout=5)
+    assert [f["method"] for f in ws.sent][:3] == [
+        "Page.enable", "Page.setLifecycleEventsEnabled", "Page.navigate"]
+    assert out["timed_out"] is False
+    assert (out["url"], out["title"], out["ready_state"]) == ("https://x/final", "X", "complete")
+    assert out["id"] == "T1" and isinstance(out["waited_ms"], int)
+
+
+def test_navigate_uses_a_load_event_that_came_before_the_reply(monkeypatch):
+    ws = ScriptWS(replies={"Page.navigate": {"frameId": "F", "loaderId": "L9"},
+                           "Runtime.evaluate": _evals(lambda e: STATE)},
+                  before={"Page.navigate": [_load("L9")]})
+    _wire(monkeypatch, ws, [_page("T1")])
+    assert cdp.navigate("T1", "https://x")["timed_out"] is False
+
+
+def test_same_document_navigation_needs_no_load_event(monkeypatch):
+    ws = ScriptWS(replies={"Page.navigate": {"frameId": "F"},
+                           "Runtime.evaluate": _evals(lambda e: STATE)})
+    _wire(monkeypatch, ws, [_page("T1")])
+    assert cdp.navigate("T1", "https://x#part")["timed_out"] is False
+
+
+def test_navigate_reports_timed_out_without_raising(monkeypatch):
+    ws = ScriptWS(replies={"Page.navigate": {"frameId": "F", "loaderId": "L2"}})
+    _wire(monkeypatch, ws, [_page("T1")])
+    out = cdp.navigate("T1", "https://slow")
+    assert out["timed_out"] is True
+    assert out["url"] is None and out["title"] is None and out["ready_state"] is None
+
+
+def test_navigate_reports_timed_out_when_discovery_stalls(monkeypatch):
+    def stalled(url, timeout=None):
+        raise browser.CdpTimeout("no reply")
+
+    monkeypatch.setattr(browser, "http_get_json", stalled)
+    out = cdp.navigate("T1", "https://x", timeout=1)
+    assert out["timed_out"] is True and out["id"] == "T1"
+
+
+def test_navigate_polls_until_the_selector_matches(monkeypatch):
+    monkeypatch.setattr(cdp, "POLL_S", 0)
+    probes = []
+
+    def value(expr):
+        if "querySelector" in expr:
+            probes.append(expr)
+            return len(probes) >= 3
+        return STATE
+
+    ws = ScriptWS(replies={"Page.navigate": {"frameId": "F", "loaderId": "L1"},
+                           "Runtime.evaluate": _evals(value)},
+                  after={"Page.navigate": [_load("L1")]})
+    _wire(monkeypatch, ws, [_page("T1")])
+    out = cdp.navigate("T1", "https://spa", wait_for="#app .ready")
+    assert out["timed_out"] is False
+    assert len(probes) == 3 and '"#app .ready"' in probes[0]
+
+
+def test_navigate_error_text_raises(monkeypatch):
+    ws = ScriptWS(replies={"Page.navigate": {"frameId": "F", "errorText": "net::ERR_NAME_NOT_RESOLVED"}})
+    _wire(monkeypatch, ws, [_page("T1")])
+    with pytest.raises(cdp.CdpError) as e:
+        cdp.navigate("T1", "https://nope.invalid")
+    assert "ERR_NAME_NOT_RESOLVED" in str(e.value)
+
+
+def test_open_tab_creates_a_blank_tab_then_navigates_and_waits(monkeypatch):
+    ws = ScriptWS(replies={"Target.createTarget": {"targetId": "T9"},
+                           "Page.navigate": {"frameId": "F", "loaderId": "L1"},
+                           "Runtime.evaluate": _evals(lambda e: STATE)},
+                  after={"Page.navigate": [_load("L1")]})
+    _wire(monkeypatch, ws, [_page("T9")])
+    out = cdp.open_tab("https://x", timeout=5)
+    create = next(f for f in ws.sent if f["method"] == "Target.createTarget")
+    nav = next(f for f in ws.sent if f["method"] == "Page.navigate")
+    assert create["params"] == {"url": "about:blank"}
+    assert nav["params"] == {"url": "https://x"}
+    assert out["id"] == "T9" and out["timed_out"] is False
+
+
+def test_open_tab_blank_needs_no_wait(monkeypatch):
+    ws = ScriptWS(replies={"Target.createTarget": {"targetId": "T3"}})
+    _wire(monkeypatch, ws, [_page("T3")])
+    out = cdp.open_tab()
+    assert out["id"] == "T3" and out["url"] == "about:blank" and out["timed_out"] is False
+    assert [f["method"] for f in ws.sent] == ["Target.createTarget"]
+
+
+def test_open_tab_reports_timed_out_when_target_creation_stalls(monkeypatch):
+    ws = ScriptWS(silent={"Target.createTarget"})
+    _wire(monkeypatch, ws, [])
+    out = cdp.open_tab("https://x", timeout=1)
+    assert out["timed_out"] is True and out["id"] is None
+
+
+# --- screenshot --------------------------------------------------------------
+
+def _png_b64(w, h):
+    buf = io.BytesIO()
+    PILImage.new("RGB", (w, h), (255, 0, 0)).save(buf, format="PNG")
+    return base64.b64encode(buf.getvalue()).decode()
+
+
+def test_screenshot_scales_inside_chrome(monkeypatch):
+    ws = ScriptWS(replies={
+        "Page.getLayoutMetrics": {"cssVisualViewport": {
+            "clientWidth": 3000, "clientHeight": 2000, "pageX": 0, "pageY": 40}},
+        "Page.captureScreenshot": {"data": _png_b64(4, 3)},
+        "Runtime.evaluate": _evals(lambda e: {"title": "T", "url": "http://p/", "dpr": 1}),
+    })
+    _wire(monkeypatch, ws, [_page("T1")])
+    png, meta = cdp.screenshot("T1")
+    clip = next(f for f in ws.sent if f["method"] == "Page.captureScreenshot")["params"]["clip"]
+    assert (clip["x"], clip["y"], clip["width"], clip["height"]) == (0, 40, 3000, 2000)
+    assert clip["scale"] == pytest.approx(capture._fit_scale(3000, 2000))
+    assert png.startswith(b"\x89PNG")
+    assert meta == {"title": "T", "url": "http://p/", "width": 4, "height": 3}
+
+
+def test_screenshot_divides_the_scale_by_the_device_pixel_ratio(monkeypatch):
+    ws = ScriptWS(replies={
+        "Page.getLayoutMetrics": {"cssVisualViewport": {"clientWidth": 2000, "clientHeight": 1000}},
+        "Page.captureScreenshot": {"data": _png_b64(4, 2)},
+        "Runtime.evaluate": _evals(lambda e: {"title": "", "url": "", "dpr": 2}),
+    })
+    _wire(monkeypatch, ws, [_page("T1")])
+    cdp.screenshot("T1")
+    clip = next(f for f in ws.sent if f["method"] == "Page.captureScreenshot")["params"]["clip"]
+    assert clip["scale"] == pytest.approx(capture._fit_scale(2000, 1000) / 2)
+
+
+@pytest.mark.parametrize("w,h", [(0, 600), (800, -1), (None, 600)])
+def test_screenshot_rejects_an_unusable_viewport(monkeypatch, w, h):
+    ws = ScriptWS(replies={"Page.getLayoutMetrics": {
+        "cssVisualViewport": {"clientWidth": w, "clientHeight": h}}})
+    _wire(monkeypatch, ws, [_page("T1")])
     with pytest.raises(cdp.CdpError):
-        cdp._http_get_json("http://127.0.0.1:9222/json")
-
-
-# --- endpoint config + launch isolation + ensure_browser --------------------
-
-def test_endpoint_respects_port_env(monkeypatch):
-    monkeypatch.setenv("HYPR_CUA_CDP_PORT", "9333")
-    assert cdp._endpoint() == "http://127.0.0.1:9333"
-
-
-def test_launch_chrome_builds_isolated_dedicated_argv(monkeypatch, tmp_path):
-    seen = {}
-
-    class _Proc:
-        pid = 4242
-
-    monkeypatch.setattr(cdp, "_find_chrome", lambda binary=None: "/usr/bin/google-chrome")
-    monkeypatch.setattr(cdp, "_spawn", lambda argv: seen.update(argv=argv) or _Proc())
-    monkeypatch.setattr(cdp, "_wait_reachable", lambda base, timeout: None)
-    info = cdp.launch_chrome(port=9333, user_data_dir=str(tmp_path))
-    argv = seen["argv"]
-    assert argv[0] == "/usr/bin/google-chrome"
-    assert "--remote-debugging-port=9333" in argv
-    assert f"--user-data-dir={tmp_path}" in argv      # isolated profile, not the user's
-    assert "--no-first-run" in argv
-    assert "--no-default-browser-check" in argv
-    assert info == {"pid": 4242, "port": 9333,
-                    "user_data_dir": str(tmp_path), "binary": "/usr/bin/google-chrome"}
-
-
-def test_ensure_browser_attaches_when_reachable(monkeypatch):
-    monkeypatch.setattr(cdp, "_reachable", lambda base: True)
-    monkeypatch.setattr(cdp, "launch_chrome",
-                        lambda *a, **k: pytest.fail("must not launch when already reachable"))
-    assert cdp.ensure_browser() == cdp._endpoint()
-
-
-def test_ensure_browser_launches_when_unreachable_and_autolaunch_on(monkeypatch):
-    monkeypatch.setenv("HYPR_CUA_CDP_AUTOLAUNCH", "1")
-    monkeypatch.setattr(cdp, "_reachable", lambda base: False)
-    launched = {}
-    monkeypatch.setattr(cdp, "launch_chrome",
-                        lambda: launched.setdefault("did", True))
-    cdp.ensure_browser()
-    assert launched.get("did")
-
-
-def test_ensure_browser_raises_when_unreachable_and_autolaunch_off(monkeypatch):
-    # autouse fixture already sets HYPR_CUA_CDP_AUTOLAUNCH=0
-    monkeypatch.setattr(cdp, "_reachable", lambda base: False)
-    with pytest.raises(cdp.CdpError):
-        cdp.ensure_browser()
+        cdp.screenshot("T1")

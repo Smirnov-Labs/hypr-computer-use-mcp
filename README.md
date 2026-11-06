@@ -60,7 +60,7 @@ Window ids are **Hyprland addresses** (`0x…`) from `list_windows` — not inte
 |------|--------------|
 | `tmux_list / tmux_new / tmux_run / tmux_keys / tmux_read / tmux_kill` | Drive terminals in detached tmux sessions on an isolated `hypr-cua` socket; it never touches your own tmux sessions |
 | `task_start / task_status / task_list / task_send / task_stop` | Run a command as a background task and poll it (`running` → `done` + exit code); answer prompts with `task_send` |
-| `cdp_targets / cdp_open / cdp_navigate / cdp_read / cdp_eval / cdp_click / cdp_type / cdp_close` | Drive tabs in a dedicated Chrome over the DevTools protocol, never your main profile (see [Browser channel](#browser-channel)) |
+| `cdp_targets / cdp_open / cdp_navigate / cdp_read / cdp_eval / cdp_screenshot / cdp_click / cdp_type / cdp_close` | Drive Chrome tabs over the DevTools protocol, never your main profile (see [Browser channel](#browser-channel)) |
 
 ## The coordinate model (the important bit)
 
@@ -76,7 +76,8 @@ global_y = region.y + screenshot_y / scale_y
 
 Practically: take a screenshot (it returns a `frame_id`), then call
 `click(x, y, frame_id=…)` with the pixel you see in *that* image. Pointer tools
-reject a missing or stale `frame_id` rather than guessing against the wrong one.
+reject a stale or unknown `frame_id` rather than guessing against the wrong one.
+Without a `frame_id`, they use your latest screenshot.
 
 The uinput pointer positions absolutely: global pixels map to the device's abs
 axes via the layout extent read from `hyprctl monitors` (verified ~1px).
@@ -170,8 +171,7 @@ command = "uvx"
 args = ["hypr-cua-mcp"]
 ```
 
-**From a local checkout:** the wrapper syncs deps on first launch and makes the
-browser channel attach-only (see [Browser channel](#browser-channel)).
+**From a local checkout:** the wrapper syncs deps on first launch.
 
 ```bash
 claude mcp add hypr-cua -- /path/to/hypr-computer-use-mcp/bin/hypr-cua-mcp
@@ -186,31 +186,43 @@ uvx hypr-cua-mcp --selftest
 
 ## Browser channel
 
-The `cdp_*` tools drive Chrome/Chromium tabs over the DevTools protocol, so
-browser work needs no window focus. They never open your main profile. By default
-they attach to a browser on port 9222. If nothing is listening there, they launch a
-throwaway Chrome with a fresh temp profile.
+The `cdp_*` tools drive Chrome or Chromium tabs over the DevTools protocol, so
+browser work needs no window focus. They never open your main profile.
 
-For logins that persist, run a dedicated automation profile and make the server
-attach-only with `HYPR_CUA_CDP_AUTOLAUNCH=0`. The checkout's `bin/hypr-cua-mcp`
-wrapper sets that for you, and `bin/hypr-cua-chrome` starts the browser. With
-`uvx`, the equivalent is:
+The first `cdp_*` call picks a browser, and later calls keep it while it stays up:
+
+1. If a browser answers on port 9222, the tools attach to it. Run your automation
+   profile there to keep logins.
+2. Otherwise they start a private headless Chrome with a throwaway profile. Chrome
+   picks a free port, so it never collides with 9222. It stops after 10 minutes
+   without a call, and when the server exits.
+
+`cdp_targets` reports which one is in use, `"browser": "automation"` or
+`"private"`. All sessions of one server share that browser, its tabs and its
+cookies.
+
+For logins that persist, start a dedicated automation profile on port 9222. From a
+checkout, `bin/hypr-cua-chrome` does that. Otherwise run:
 
 ```bash
 chromium --user-data-dir="$HOME/.local/share/hypr-cua-chrome" \
-  --remote-debugging-port=9222 --remote-allow-origins=http://127.0.0.1:9222 \
-  --no-first-run --no-default-browser-check
+  --remote-debugging-port=9222 --no-first-run --no-default-browser-check
 ```
 
-Log in only to what you're happy to automate. Any local process that can reach the
-debug port can drive that profile.
+Log in only to what you're happy to automate. Any local process that can reach a
+DevTools port can drive that browser, and that includes the private one.
+
+`cdp_open` and `cdp_navigate` wait for the page's load event, and for a CSS
+selector if you pass `wait_for`. A page still loading at `timeout` (default 30 s)
+comes back with `"timed_out": true` instead of an error. `cdp_read` takes a
+`selector` and `max_chars`. `cdp_screenshot` returns an image of a tab's viewport.
 
 | Variable | Default | Effect |
 |----------|---------|--------|
-| `HYPR_CUA_CDP_PORT` | `9222` | DevTools port to attach to (or launch on) |
-| `HYPR_CUA_CDP_AUTOLAUNCH` | `1` | `0` = attach-only: never launch a browser, error if nothing is listening |
-| `HYPR_CUA_CDP_USER_DATA_DIR` | fresh temp dir | Profile directory for an auto-launched browser |
-| `HYPR_CUA_CDP_BIN` | first Chrome/Chromium on `PATH` | Browser binary to auto-launch |
+| `HYPR_CUA_CDP_PORT` | `9222` | Port of the automation browser to attach to |
+| `HYPR_CUA_CDP_AUTOLAUNCH` | `1` | `0` = attach-only: never start a private Chrome, and fail if nothing answers on the port |
+| `HYPR_CUA_CDP_BIN` | first Chrome/Chromium on `PATH` | Browser binary for the private Chrome |
+| `HYPR_CUA_CDP_USER_DATA_DIR` | `~/.local/share/hypr-cua-chrome` | Profile directory for `bin/hypr-cua-chrome` |
 
 Set them in your client's server config. In Claude Code:
 `claude mcp add hypr-cua -e HYPR_CUA_CDP_AUTOLAUNCH=0 -- uvx hypr-cua-mcp`. In JSON

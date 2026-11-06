@@ -24,9 +24,18 @@ import sys
 
 from mcp.server.mcpserver import MCPServer, Image
 
-from . import __version__, capture, cdp, clipboard, coords, hyprcontrol, hyprtree, inputs, taskrunner, tmux
+from . import __version__, browser, capture, cdp, clipboard, coords, hyprcontrol, hyprtree, inputs, taskrunner, tmux
 
 mcp = MCPServer("hypr-cua", version=__version__)
+
+
+def _json(obj) -> str:
+    """Compact JSON for tool results: no indentation, non-ASCII text kept as is.
+
+    Page text can hold a lone UTF-16 surrogate, which the MCP transport cannot
+    encode, so those are escaped as \\uXXXX (still valid JSON)."""
+    text = json.dumps(obj, separators=(",", ":"), ensure_ascii=False)
+    return text.encode("utf-8", "backslashreplace").decode("utf-8")
 
 
 def _shot_response(shot: capture.Shot):
@@ -39,24 +48,24 @@ def _shot_response(shot: capture.Shot):
         f"{meta['screenshot_size']['w']}x{meta['screenshot_size']['h']}px. "
         f"frame_id={frame_id!r}. Give click/move/scroll/drag coordinates in THIS "
         "image's pixel space (top-left = 0,0) and pass this frame_id so the server "
-        "maps against the screenshot you actually saw.\n" + json.dumps(meta)
+        "maps against the screenshot you actually saw.\n" + _json(meta)
     )
     return [Image(data=shot.png, format="png"), caption]
 
 
 # --- perception -------------------------------------------------------------
 
-@mcp.tool()
+@mcp.tool(structured_output=False)
 def list_windows() -> str:
     """List all Hyprland windows: id (address), class, title, workspace, output,
     global geometry, floating/focus/visibility. Use the `id` for focus/screenshot."""
-    return json.dumps(hyprtree.list_windows(), indent=2)
+    return _json(hyprtree.list_windows())
 
 
-@mcp.tool()
+@mcp.tool(structured_output=False)
 def get_outputs() -> str:
     """List active outputs (monitors) with their global geometry, scale, workspace."""
-    return json.dumps(hyprtree.get_outputs(), indent=2)
+    return _json(hyprtree.get_outputs())
 
 
 @mcp.tool(structured_output=False)
@@ -109,7 +118,7 @@ def screenshot_window(con_id: str):
 
 # --- pointer (coordinates are in the named screenshot's pixel space) ---------
 
-@mcp.tool()
+@mcp.tool(structured_output=False)
 def click(x: float, y: float, button: str = "left", frame_id: str | None = None) -> str:
     """Click at (x,y) in the pixels of screenshot `frame_id` (default: the last
     screenshot). button: left|middle|right. Errors if no screenshot exists yet or
@@ -121,7 +130,7 @@ def click(x: float, y: float, button: str = "left", frame_id: str | None = None)
     return f"{button} click at shot({x},{y}) -> screen({gx},{gy}) [frame {frame_id or 'last'}: {frame.label}]"
 
 
-@mcp.tool()
+@mcp.tool(structured_output=False)
 def double_click(x: float, y: float, button: str = "left", frame_id: str | None = None) -> str:
     """Double-click at (x,y) in screenshot `frame_id`'s pixel space."""
     frame = coords.frames.resolve(frame_id)
@@ -131,7 +140,7 @@ def double_click(x: float, y: float, button: str = "left", frame_id: str | None 
     return f"double {button} click at screen({gx},{gy})"
 
 
-@mcp.tool()
+@mcp.tool(structured_output=False)
 def move_mouse(x: float, y: float, frame_id: str | None = None, follow: bool = False) -> str:
     """Move the pointer to (x,y) in screenshot `frame_id`'s pixel space.
 
@@ -157,7 +166,7 @@ def move_mouse(x: float, y: float, frame_id: str | None = None, follow: bool = F
     return msg
 
 
-@mcp.tool()
+@mcp.tool(structured_output=False)
 def drag(x1: float, y1: float, x2: float, y2: float, button: str = "left",
          frame_id: str | None = None) -> str:
     """Drag from (x1,y1) to (x2,y2), coords in screenshot `frame_id`'s pixel space."""
@@ -169,7 +178,7 @@ def drag(x1: float, y1: float, x2: float, y2: float, button: str = "left",
     return f"dragged screen({gx1},{gy1})->({gx2},{gy2})"
 
 
-@mcp.tool()
+@mcp.tool(structured_output=False)
 def scroll(x: float, y: float, direction: str = "down", amount: int = 3,
            frame_id: str | None = None) -> str:
     """Scroll at (x,y) (screenshot `frame_id` pixel space). direction: up|down."""
@@ -193,14 +202,14 @@ def _focus_or_raise(con_id: str) -> None:
         )
 
 
-@mcp.tool()
+@mcp.tool(structured_output=False)
 def focus_window(con_id: str) -> str:
     """Give keyboard focus to a window (by address). Raises if focus can't land."""
     _focus_or_raise(con_id)
     return f"focused {con_id}"
 
 
-@mcp.tool()
+@mcp.tool(structured_output=False)
 def type_text(text: str, con_id: str | None = None) -> str:
     """Type text into the focused window. If con_id (address) is given, focus it
     first and fail (no keystrokes sent) if that focus can't be verified.
@@ -215,7 +224,7 @@ def type_text(text: str, con_id: str | None = None) -> str:
     return f"typed {len(text)} chars" + (f" into {con_id}" if con_id is not None else "")
 
 
-@mcp.tool()
+@mcp.tool(structured_output=False)
 def key(keys: str, con_id: str | None = None) -> str:
     """Press a key/chord (e.g. 'ctrl+s', 'Return', 'alt+Tab'). If con_id (address)
     is given, focus it first and fail if that focus can't be verified."""
@@ -226,22 +235,22 @@ def key(keys: str, con_id: str | None = None) -> str:
     return f"pressed {keys}"
 
 
-@mcp.tool()
+@mcp.tool(structured_output=False)
 def get_mouse() -> str:
     """Current global pointer location."""
-    return json.dumps(inputs.mouse_location())
+    return _json(inputs.mouse_location())
 
 
 # --- clipboard (exact text in/out; no OCR) ----------------------------------
 
-@mcp.tool()
+@mcp.tool(structured_output=False)
 def read_clipboard(selection: str = "clipboard") -> str:
     """Read the text of a Wayland selection: 'clipboard' (Ctrl-C / Ctrl-Shift-V)
     or 'primary' (select / middle-click). Returns '' if empty."""
     return clipboard.read_clipboard(selection)
 
 
-@mcp.tool()
+@mcp.tool(structured_output=False)
 def write_clipboard(text: str, selection: str = "clipboard", secret: bool = False) -> str:
     """Set a Wayland selection ('clipboard' or 'primary') to text, then paste with
     key('ctrl+v' or 'ctrl+shift+v') or a middle-click. Returns only a length
@@ -253,44 +262,44 @@ def write_clipboard(text: str, selection: str = "clipboard", secret: bool = Fals
 
 # --- tmux copilot: drive terminals invisibly (no window / no focus) ---------
 
-@mcp.tool()
+@mcp.tool(structured_output=False)
 def tmux_list() -> str:
     """List the copilot's tmux panes — session, pane, running command, size, state.
 
     They live on a dedicated 'hypr-cua' tmux socket, isolated from your real
     (default-socket) sessions. Detached = no window, no focus, zero screen
     footprint — the way to run terminal work on a non-visible workspace."""
-    return json.dumps(tmux.list_panes(), indent=2)
+    return _json(tmux.list_panes())
 
 
-@mcp.tool()
+@mcp.tool(structured_output=False)
 def tmux_new(name: str, command: str | None = None) -> str:
     """Create a detached copilot session `name` running a shell (or `command`).
     No window, no focus. Drive it with tmux_run/tmux_keys, read it with tmux_read."""
     return f"created session {tmux.new_pane(name, command)}"
 
 
-@mcp.tool()
+@mcp.tool(structured_output=False)
 def tmux_run(target: str, command: str) -> str:
     """Type a shell command line into session `target` and press Enter. Read the
     output afterward with tmux_read (the shell persists between calls)."""
     return tmux.run(target, command)
 
 
-@mcp.tool()
+@mcp.tool(structured_output=False)
 def tmux_keys(target: str, keys: str) -> str:
     """Send interpreted tmux keys to `target` (e.g. 'C-c' to interrupt, 'Up',
     'Escape', 'q') — for TUIs / control sequences, not literal command text."""
     return tmux.send_keys(target, keys)
 
 
-@mcp.tool()
+@mcp.tool(structured_output=False)
 def tmux_read(target: str, lines: int = 50) -> str:
     """Capture session `target`'s terminal text (last `lines` incl. scrollback)."""
     return tmux.read_pane(target, lines)
 
 
-@mcp.tool()
+@mcp.tool(structured_output=False)
 def tmux_kill(target: str) -> str:
     """Kill copilot session `target` (only touches the isolated 'hypr-cua' socket)."""
     return tmux.kill(target)
@@ -298,55 +307,77 @@ def tmux_kill(target: str) -> str:
 
 # --- CDP browser (drive Chrome tabs over the DevTools protocol; no focus) ---
 
-@mcp.tool()
+@mcp.tool(structured_output=False)
 def cdp_targets() -> str:
-    """List drivable Chrome tabs (id, title, url) in the copilot browser. Starts a
-    DEDICATED Chrome (isolated profile, debugging port) on first use if none is up —
-    it never touches your main Chrome. Use a tab's `id` with the other cdp_* tools."""
-    return json.dumps(cdp.list_targets(), indent=2)
+    """List the copilot browser's tabs as JSON {browser, tabs: [{id, title, url}]}.
+    `browser` is "automation" (the Chrome on port 9222) or "private" (a headless
+    Chrome hypr-cua started because nothing answered on 9222; it stops after 10
+    idle minutes, and its tabs and cookies go with it). Use a tab's `id` with the
+    other cdp_* tools."""
+    return _json(cdp.list_targets())
 
 
-@mcp.tool()
-def cdp_open(url: str = "about:blank") -> str:
-    """Open a new tab in the copilot browser. Returns the new tab's {id, url} as JSON."""
-    return json.dumps(cdp.open_tab(url))
+@mcp.tool(structured_output=False)
+def cdp_open(url: str = "about:blank", wait_for: str | None = None, timeout: float = 30) -> str:
+    """Open a new tab at `url` and wait for it to load, plus for CSS selector
+    `wait_for` if given. Returns JSON {id, url, title, ready_state, waited_ms,
+    timed_out}. A page still loading at `timeout` (1 to 300 s) returns
+    timed_out=true instead of failing."""
+    return _json(cdp.open_tab(url, wait_for=wait_for, timeout=timeout))
 
 
-@mcp.tool()
-def cdp_navigate(target: str, url: str) -> str:
-    """Navigate a tab (by id from cdp_targets) to a URL. Returns {id, url, frameId}."""
-    return json.dumps(cdp.navigate(target, url))
+@mcp.tool(structured_output=False)
+def cdp_navigate(target: str, url: str, wait_for: str | None = None, timeout: float = 30) -> str:
+    """Navigate a tab (by id from cdp_targets) and wait like cdp_open. Returns the
+    same JSON."""
+    return _json(cdp.navigate(target, url, wait_for=wait_for, timeout=timeout))
 
 
-@mcp.tool()
-def cdp_eval(target: str, expression: str) -> str:
-    """Evaluate a JavaScript expression in a tab (by id) and return its value as
-    JSON. A thrown JS exception is surfaced as an error, not swallowed."""
-    return json.dumps(cdp.eval_js(target, expression))
+@mcp.tool(structured_output=False)
+def cdp_eval(target: str, expression: str, timeout: float = 30) -> str:
+    """Evaluate a JavaScript expression in a tab and return its value as JSON.
+    Promises are awaited. `timeout` (1 to 300 s) bounds the whole call. A thrown JS
+    exception is an error."""
+    return _json(cdp.eval_js(target, expression, timeout=timeout))
 
 
-@mcp.tool()
-def cdp_read(target: str) -> str:
-    """Read a tab's visible text (document.body.innerText) plus its title and url,
-    as JSON {title, url, text} — a focus-free way to see page content."""
-    return json.dumps(cdp.read_text(target), indent=2)
+@mcp.tool(structured_output=False)
+def cdp_read(target: str, selector: str | None = None, max_chars: int = 20000) -> str:
+    """Read the visible text (innerText) of a tab, or of the first element matching
+    CSS `selector`, as JSON {title, url, text, chars_total, truncated}. The text is
+    cut to max_chars inside the page."""
+    return _json(cdp.read_text(target, selector=selector, max_chars=max_chars))
 
 
-@mcp.tool()
+@mcp.tool(structured_output=False)
+def cdp_screenshot(target: str):
+    """Screenshot a tab's viewport in the copilot browser (no window focus needed).
+    The image has no frame_id: act on the page with cdp_click or cdp_eval, not with
+    the desktop pointer tools."""
+    png, meta = cdp.screenshot(target)
+    caption = (
+        f"Screenshot of tab {target} ({meta['title']!r}, {meta['url']}), "
+        f"{meta['width']}x{meta['height']}px. No frame_id: the desktop pointer tools "
+        "can't act on this image; use cdp_click or cdp_eval."
+    )
+    return [Image(data=png, format="png"), caption]
+
+
+@mcp.tool(structured_output=False)
 def cdp_click(target: str, selector: str) -> str:
     """Click the first element matching a CSS selector in a tab (by id). Errors if
     nothing matches the selector."""
     return cdp.click(target, selector)
 
 
-@mcp.tool()
+@mcp.tool(structured_output=False)
 def cdp_type(target: str, selector: str, text: str) -> str:
     """Type text into the element matching a CSS selector in a tab (by id): sets its
     value and dispatches input/change events. Returns a length summary — not the text."""
     return cdp.type_text(target, selector, text)
 
 
-@mcp.tool()
+@mcp.tool(structured_output=False)
 def cdp_close(target: str) -> str:
     """Close a tab (by id) in the copilot browser."""
     return cdp.close_tab(target)
@@ -354,32 +385,32 @@ def cdp_close(target: str) -> str:
 
 # --- task-runner: launch a job and watch it work (hidden tmux session) ------
 
-@mcp.tool()
+@mcp.tool(structured_output=False)
 def task_start(name: str, command: str) -> str:
     """Launch `command` as a background TASK in a hidden copilot tmux session — no
     window, no focus, zero screen footprint. The command is wrapped so completion
     is detectable (a `__TASK_DONE__:<exit_code>` sentinel), so you can poll it with
     task_status. Returns the task's initial {name, state} as JSON. Names must be
     unique and free of ':', '.', '/', and whitespace."""
-    return json.dumps(taskrunner.start(name, command))
+    return _json(taskrunner.start(name, command))
 
 
-@mcp.tool()
+@mcp.tool(structured_output=False)
 def task_status(name: str, tail: int = 20) -> str:
     """Check a task: JSON {name, state, exit_code?, tail}. state is 'running' (still
     going), 'done' (finished — `exit_code` 0 = success, non-zero = failure), or
     'missing' (no such task). `tail` = that many last lines of its output."""
-    return json.dumps(taskrunner.status(name, tail), indent=2)
+    return _json(taskrunner.status(name, tail))
 
 
-@mcp.tool()
+@mcp.tool(structured_output=False)
 def task_list() -> str:
     """List all tasks with their state (running | done+exit_code) as JSON — the
     copilot tmux sessions started via task_start (plain tmux sessions excluded)."""
-    return json.dumps(taskrunner.list(), indent=2)
+    return _json(taskrunner.list())
 
 
-@mcp.tool()
+@mcp.tool(structured_output=False)
 def task_send(name: str, text: str, enter: bool = True) -> str:
     """Send input to a running task — e.g. answer a prompt it's blocked on. Default
     types `text` + Enter; enter=False sends interpreted keys ('C-c', 'Up', 'Escape')
@@ -388,7 +419,7 @@ def task_send(name: str, text: str, enter: bool = True) -> str:
     return taskrunner.send(name, text, enter)
 
 
-@mcp.tool()
+@mcp.tool(structured_output=False)
 def task_stop(name: str) -> str:
     """Stop a task by killing its hidden tmux session (only touches the isolated
     'hypr-cua' copilot socket)."""
@@ -397,7 +428,7 @@ def task_stop(name: str) -> str:
 
 # --- Hyprland control (workspace / float / launch / layout) -----------------
 
-@mcp.tool()
+@mcp.tool(structured_output=False)
 def launch(command: str) -> str:
     """Launch an app via Hyprland's exec dispatcher. Opens on the current
     workspace — pair with goto_workspace or move_window_to_workspace to place it."""
@@ -405,26 +436,26 @@ def launch(command: str) -> str:
     return hyprcontrol.launch(command)
 
 
-@mcp.tool()
+@mcp.tool(structured_output=False)
 def goto_workspace(workspace: str) -> str:
     """Switch the focused monitor to a workspace (created if absent). Numeric names
     match by number; other names are matched literally."""
     return hyprcontrol.goto_workspace(workspace)
 
 
-@mcp.tool()
+@mcp.tool(structured_output=False)
 def move_window_to_workspace(con_id: str, workspace: str) -> str:
     """Move a window (by address) to a workspace without following it."""
     return hyprcontrol.move_window_to_workspace(con_id, workspace)
 
 
-@mcp.tool()
+@mcp.tool(structured_output=False)
 def set_floating(con_id: str, enable: bool = True) -> str:
     """Enable/disable floating for a window (by address)."""
     return hyprcontrol.set_floating(con_id, enable)
 
 
-@mcp.tool()
+@mcp.tool(structured_output=False)
 def layout_message(message: str) -> str:
     """Send a message to the active layout engine (dwindle/master), e.g.
     'togglesplit', 'swapsplit', 'orientationnext'. (Hyprland has no per-window
@@ -432,7 +463,7 @@ def layout_message(message: str) -> str:
     return hyprcontrol.layout_message(message)
 
 
-@mcp.tool()
+@mcp.tool(structured_output=False)
 def run_dispatch(dsp_expr: str) -> str:
     """Escape hatch: run a raw Hyprland dispatcher as the Lua expression passed to
     hl.dispatch(...), e.g. 'hl.dsp.window.fullscreen({})' or 'hl.dsp.window.move({ direction = "l" })'.
@@ -466,6 +497,7 @@ def selftest() -> int:
 def main() -> None:
     if "--selftest" in sys.argv:
         raise SystemExit(selftest())
+    browser.install_exit_handlers()  # stop a private Chrome on SIGINT/SIGTERM/exit
     mcp.run()  # stdio transport
 
 
