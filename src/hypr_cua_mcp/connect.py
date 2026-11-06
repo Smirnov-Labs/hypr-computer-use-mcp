@@ -85,12 +85,14 @@ class Connector:
                     if not line.endswith(b"\n"):
                         break  # a reply cut off by the disconnect; its request gets LOST
                     msg = _parse(line)
-                    with self._lock:
-                        if self.sock is not sock:
-                            break  # already declared lost, and its requests answered
-                        if msg is not None and "id" in msg and "method" not in msg:
-                            self.pending.discard(json.dumps(msg["id"]))
-                    self._write(line)
+                    with self._out:  # held until the line is out, so a legacy exit can't cut it off
+                        with self._lock:
+                            if self.sock is not sock:
+                                break  # already declared lost, and its requests answered
+                            if msg is not None and "id" in msg and "method" not in msg:
+                                self.pending.discard(json.dumps(msg["id"]))
+                        self.stdout.write(line)
+                        self.stdout.flush()
         except OSError:
             pass
         self._lost(sock)
@@ -112,7 +114,8 @@ class Connector:
             pass
         sock.close()
         if legacy:
-            _exit(1)
+            with self._out:  # a reply the pump is writing goes out first
+                _exit(1)
 
     def _reconnect(self):
         deadline = time.monotonic() + RECONNECT_FOR

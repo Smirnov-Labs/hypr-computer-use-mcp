@@ -94,6 +94,10 @@ sh -c '<command>'; printf '\n__TASK_DONE__:%s\n' "$?"; exec sleep 2147483647
   reconnect (Claude Code: `/mcp`). Clients on MCP 2026-07-28, Claude Code among them,
   reconnect by themselves.
 - All sessions share one browser, so they share its tabs, cookies and idle timer.
+- Desktop actions from different sessions take turns. One that is waiting for its
+  turn still runs after its client cancels it or disconnects.
+- At most 40 tool calls run at once across all sessions (anyio's worker threads).
+  Further calls wait for a free thread.
 - The service reads `WAYLAND_DISPLAY` and `HYPRLAND_INSTANCE_SIGNATURE` from the
   systemd user manager when it starts. Without the startup line from the README, a
   service started after a Hyprland restart can keep the old values.

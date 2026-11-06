@@ -44,6 +44,7 @@ class Service:
     """The service side of one connection."""
 
     def __init__(self, sock):
+        sock.settimeout(2)  # a read that never gets its line fails instead of hanging
         self.sock, self.file = sock, sock.makefile("rwb")
 
     def read(self):
@@ -151,6 +152,32 @@ def test_a_legacy_client_exits_instead_of_reconnecting(exits):
     services.conns[0].die()
     _until(lambda: exits == [1])
     assert out.lines() == [_lost(1)] and len(services.conns) == 1
+
+
+def test_a_legacy_exit_waits_for_a_reply_that_is_being_written(exits):
+    entered, gate = threading.Event(), threading.Event()
+
+    class SlowOut(Out):
+        def write(self, data):
+            if b'"result"' in data:
+                entered.set()
+                gate.wait(2)
+            super().write(data)
+
+    services, out = Services(), SlowOut()
+    c = _connector(services, out)
+    c.send(_req(1, "initialize"))
+    svc, sock = services.conns[0], c.sock
+    svc.read()
+    svc.write(_line({"jsonrpc": "2.0", "id": 1, "result": {}}))
+    assert entered.wait(2)  # the reply is on its way to stdout
+    dropper = threading.Thread(target=c._lost, args=(sock,))  # as when a send on it fails
+    dropper.start()
+    time.sleep(0.05)
+    assert exits == []  # the exit waits for that reply
+    gate.set()
+    dropper.join(2)
+    assert out.lines() == [{"jsonrpc": "2.0", "id": 1, "result": {}}] and exits == [1]
 
 
 def test_it_gives_up_after_the_reconnect_window(exits, monkeypatch):

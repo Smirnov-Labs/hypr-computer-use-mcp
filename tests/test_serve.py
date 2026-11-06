@@ -72,20 +72,50 @@ def desktop(monkeypatch):
 
 def test_two_sessions_keep_their_frames_apart(desktop):
     async def main():
-        async with anyio.create_task_group() as tg:
-            a, b = await _pair(tg), await _pair(tg)
-            await a.start()
-            await b.start()
-            fid_a = _text(await a.call("screenshot")).split("frame_id='")[1].split("'")[0]
-            await b.call("screenshot")
-            stale = await b.call("click", {"x": 1, "y": 1, "frame_id": fid_a})
-            ok = await a.call("click", {"x": 1, "y": 1, "frame_id": fid_a})
-            tg.cancel_scope.cancel()
+        with anyio.fail_after(10):
+            async with anyio.create_task_group() as tg:
+                a, b = await _pair(tg), await _pair(tg)
+                await a.start()
+                await b.start()
+                fid_a = _text(await a.call("screenshot")).split("frame_id='")[1].split("'")[0]
+                await b.call("screenshot")
+                stale = await b.call("click", {"x": 1, "y": 1, "frame_id": fid_a})
+                ok = await a.call("click", {"x": 1, "y": 1, "frame_id": fid_a})
+                tg.cancel_scope.cancel()
         return stale, ok
 
     stale, ok = anyio.run(main)
     assert stale.get("isError") is True and "stale" in _text(stale)
     assert not ok.get("isError") and desktop == [(1, 1)]
+
+
+# A 2026-07-28 request carries the client's protocol version and info itself.
+_MODERN = {"io.modelcontextprotocol/protocolVersion": "2026-07-28",
+           "io.modelcontextprotocol/clientInfo": {"name": "t", "version": "0"},
+           "io.modelcontextprotocol/clientCapabilities": {}}
+
+
+def test_a_modern_client_needs_no_handshake_on_a_new_connection(desktop):
+    """What the connector's reconnect relies on: a fresh connection serves a
+    2026-07-28 request with no initialize, and sessions still keep their frames."""
+    async def main():
+        with anyio.fail_after(10):
+            async with anyio.create_task_group() as tg:
+                a, b = await _pair(tg), await _pair(tg)
+                shot = await a.request("tools/call", {"name": "screenshot", "arguments": {},
+                                                      "_meta": _MODERN})
+                fid = _text(shot["result"]).split("frame_id='")[1].split("'")[0]
+                other = await b.request("tools/call", {"name": "click", "_meta": _MODERN,
+                                                       "arguments": {"x": 1, "y": 1, "frame_id": fid}})
+                tg.cancel_scope.cancel()
+        return shot, other
+
+    shot, other = anyio.run(main)
+    assert not shot["result"].get("isError")
+    # A new connection is a new session with no frames, as after a reconnect.
+    assert other["result"].get("isError") is True
+    assert "no screenshot has been taken yet" in _text(other["result"])
+    assert desktop == []  # the other session's click sent nothing
 
 
 def test_a_closed_connection_ends_its_session_and_drops_its_frames(desktop):

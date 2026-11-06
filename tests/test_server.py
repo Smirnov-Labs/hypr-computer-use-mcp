@@ -371,10 +371,11 @@ def test_desktop_tools_run_one_at_a_time(monkeypatch):
     clicker = threading.Thread(target=server.click, args=(1, 1), kwargs={"frame_id": fid})
     clicker.start()
     time.sleep(0.05)
-    assert events == ["focus"]  # the click waits for the focus-and-type call
+    assert clicker.is_alive() and events == ["focus"]  # the click waits for the focus-and-type call
     release.set()
     typer.join(2)
     clicker.join(2)
+    assert not typer.is_alive() and not clicker.is_alive()
     assert events == ["focus", "type", "click"]
 
 
